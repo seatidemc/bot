@@ -1,0 +1,32 @@
+services:
+  napcat:
+    image: mlikiowa/napcat-docker:latest
+    container_name: napcat
+    restart: unless-stopped
+    environment:
+      - ACCOUNT=${QQ_ACCOUNT:-}
+      - WSR_ENABLE=true
+      - WS_URLS=["ws://bot:8080/onebot/v11/ws"]
+    ports:
+      - "6099:6099"  # NapCat WebUI
+    volumes:
+      - ./napcat/data:/app/.napcat
+      - ./napcat/qq:/app/QQ
+
+  bot:
+    build: .
+    container_name: seatide-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - napcat
+
+# ─── 部署说明 ────────────────────────────────────────────────
+# 后端 go-aliyunmc-v2 运行在宿主机 127.0.0.1:45678。
+# 请在 .env 中将 BACKEND_URL 设为 http://host.docker.internal:45678
+# 或使用宿主机内网 IP。
