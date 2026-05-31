@@ -96,7 +96,10 @@ bot 依赖后端以下改动（已在 `~/code/go-aliyunmc-v2` 中实施）：
 ## 约定
 
 - 数据库文件 `data/bot.db` 由 Docker volume 挂载到宿主机，不随容器销毁丢失
+- `data/` 目录需手动创建（`mkdir -p data`），首次启动时 aiosqlite 不会自动建目录
 - 用户 JWT 过期后 bot 返回友好提示引导重新 `/登录`，不做静默刷新
 - 所有后端错误（401/403/404/500）通过 `APIError` 透传，命令处理器直接向用户展示 `e.message`
 - `.env` 和 `data/` 和 `napcat/` 均被 `.gitignore` 排除
 - 项目不设 CI/CD，手动 `docker compose` 管理
+- 插件加载用 `load_plugin("src.plugins.mc_client")`（指定模块名），不用 `load_plugins("src.plugins")`（目录扫描，在本项目结构下无法发现子包）
+- 必须用 `DRIVER=~fastapi`（服务端驱动），`~httpx` 是纯客户端驱动不支持反向 WS

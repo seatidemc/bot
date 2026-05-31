@@ -8,5 +8,5 @@ _cfg = _driver.config
 BACKEND_URL: str = getattr(_cfg, "backend_url", "http://127.0.0.1:45678")
 BOT_KEY: str = getattr(_cfg, "bot_key", "")
 BOT_USERNAME: str = getattr(_cfg, "bot_username", "")
-BOT_PASSWORD: str = getattr(_cfg, "bot_password", "")
+BOT_PASSWORD: str = str(getattr(_cfg, "bot_password", ""))
 GROUP_ID: str = str(getattr(_cfg, "group_id", ""))

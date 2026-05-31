@@ -1,0 +1,11 @@
+pyproject.toml
+src/plugins/__init__.py
+src/plugins/mc_client/__init__.py
+src/plugins/mc_client/api.py
+src/plugins/mc_client/config.py
+src/plugins/mc_client/db.py
+src/seatide_bot.egg-info/PKG-INFO
+src/seatide_bot.egg-info/SOURCES.txt
+src/seatide_bot.egg-info/dependency_links.txt
+src/seatide_bot.egg-info/requires.txt
+src/seatide_bot.egg-info/top_level.txt

@@ -109,7 +109,7 @@ def _fmt_instance_status(event: dict) -> str | None:
 
 # ─── 命令：/登录 ──────────────────────────────────────────────
 
-login_cmd = on_command("登录", permission=PRIVATE, priority=5)
+login_cmd = on_command("登录", aliases={"login"}, permission=PRIVATE, priority=5)
 
 
 @login_cmd.handle()
@@ -157,7 +157,7 @@ async def _get_user_jwt(event: GroupMessageEvent) -> tuple[str, dict]:
 
 # ─── 命令：/状态 ──────────────────────────────────────────────
 
-status_cmd = on_command("状态", permission=GROUP, priority=5)
+status_cmd = on_command("状态", aliases={"status", "zt"}, permission=GROUP, priority=5)
 
 
 @status_cmd.handle()
@@ -200,7 +200,7 @@ async def handle_status(event: GroupMessageEvent):
 
 # ─── 命令：/开机 ──────────────────────────────────────────────
 
-start_cmd = on_command("开机", permission=GROUP, priority=5)
+start_cmd = on_command("开机", aliases={"start", "kj"}, permission=GROUP, priority=5)
 
 
 @start_cmd.handle()
@@ -226,7 +226,7 @@ async def handle_start(event: GroupMessageEvent):
 
 # ─── 命令：/释放时间 ──────────────────────────────────────────
 
-idle_cmd = on_command("释放时间", aliases={"剩余时间"}, permission=GROUP, priority=5)
+idle_cmd = on_command("释放时间", aliases={"idle", "sfsj", "剩余时间"}, permission=GROUP, priority=5)
 
 
 @idle_cmd.handle()
@@ -250,7 +250,7 @@ async def handle_idle(event: GroupMessageEvent):
 
 # ─── 命令：/我的信息 ──────────────────────────────────────────
 
-info_cmd = on_command("我的信息", permission=GROUP, priority=5)
+info_cmd = on_command("我的信息", aliases={"info", "wdxx", "profile"}, permission=GROUP, priority=5)
 
 
 @info_cmd.handle()
