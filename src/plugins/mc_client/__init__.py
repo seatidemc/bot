@@ -308,6 +308,20 @@ async def handle_info(bot: Bot, event: GroupAtMessageCreateEvent):
     await info_cmd.finish("\n".join(parts))
 
 
+# ─── 兜底：私聊非命令消息 ─────────────────────────────────────
+
+from nonebot import on_message
+
+_fallback = on_message(permission=PRIVATE, priority=99, block=False)
+
+
+@_fallback.handle()
+async def handle_fallback(event: C2CMessageCreateEvent):
+    await _fallback.finish(
+        "发送 /登录 用户名 密码 开始使用"
+    )
+
+
 # ─── 启动事件 ─────────────────────────────────────────────────
 
 driver = get_driver()
