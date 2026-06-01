@@ -3,7 +3,7 @@
 set -e
 
 SCREEN_NAME="seatide-bot"
-BOT_DIR="$HOME/code/seatide2026/bot"
+BOT_DIR="$HOME/bot"
 
 # ---- 处理命令 ----
 case "${1:-}" in
