@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-"""模拟 OneBot v11 反向 WebSocket 客户端，用于本地测试 bot。
+"""[已废弃] 模拟 OneBot v11 反向 WebSocket 客户端。
 
-用法：
+本项目已迁移至 nonebot-adapter-qq（QQ 官方 API），不再使用 OneBot 协议。
+此文件保留作为历史参考，不再可用。
+
+用法（仅旧版 OneBot 架构）：
   python test_mock_client.py
 
 前提：

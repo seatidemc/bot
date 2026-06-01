@@ -3,7 +3,7 @@ Name: seatide-bot
 Version: 0.1.0
 Summary: Seatide MC 服务器 QQ 机器人
 Requires-Python: >=3.11
-Requires-Dist: nonebot2>=2.4.0
-Requires-Dist: nonebot-adapter-onebot>=2.4.0
+Requires-Dist: nonebot2[websockets]>=2.4.0
+Requires-Dist: nonebot-adapter-qq>=1.7.0
 Requires-Dist: httpx>=0.28.0
 Requires-Dist: aiosqlite>=0.21.0

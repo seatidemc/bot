@@ -4,12 +4,12 @@ version = "0.1.0"
 description = "Seatide MC 服务器 QQ 机器人"
 requires-python = ">=3.11"
 dependencies = [
-    "nonebot2[fastapi]>=2.4.0",
-    "nonebot-adapter-onebot>=2.4.0",
+    "nonebot2[websockets]>=2.4.0",
+    "nonebot-adapter-qq>=1.7.0",
     "httpx>=0.28.0",
     "aiosqlite>=0.21.0",
 ]
 
 [tool.nonebot]
-adapters = ["nonebot.adapters.onebot.v11"]
+adapters = ["nonebot.adapters.qq"]
 plugins = ["src.plugins"]
