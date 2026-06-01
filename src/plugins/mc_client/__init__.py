@@ -82,6 +82,7 @@ async def _is_group(event) -> bool:
 
 PRIVATE = Permission(_is_private)
 GROUP = Permission(_is_group)
+PRIVATE_OR_GROUP = PRIVATE | GROUP
 
 
 # ─── SSE 状态监听 ─────────────────────────────────────────────
@@ -170,7 +171,7 @@ async def handle_login(event: C2CMessageCreateEvent):
 # ─── 辅助：获取群聊用户的 JWT ──────────────────────────────────
 
 async def _get_user_jwt(
-    bot: Bot, event: GroupAtMessageCreateEvent
+    bot: Bot, event: C2CMessageCreateEvent | GroupAtMessageCreateEvent
 ) -> tuple[str, dict]:
     """从数据库获取发消息用户的 JWT。未登录则直接回复提醒。"""
     user_id = event.get_user_id()
@@ -186,11 +187,11 @@ async def _get_user_jwt(
 
 # ─── 命令：/状态 ──────────────────────────────────────────────
 
-status_cmd = on_command("状态", aliases={"status", "zt"}, permission=GROUP, priority=5)
+status_cmd = on_command("状态", aliases={"status", "zt"}, permission=PRIVATE_OR_GROUP, priority=5)
 
 
 @status_cmd.handle()
-async def handle_status(bot: Bot, event: GroupAtMessageCreateEvent):
+async def handle_status(bot: Bot, event: C2CMessageCreateEvent | GroupAtMessageCreateEvent):
     try:
         jwt, _ = await _get_user_jwt(bot, event)
     except RuntimeError:
@@ -227,11 +228,11 @@ async def handle_status(bot: Bot, event: GroupAtMessageCreateEvent):
 
 # ─── 命令：/开机 ──────────────────────────────────────────────
 
-start_cmd = on_command("开机", aliases={"start", "kj"}, permission=GROUP, priority=5)
+start_cmd = on_command("开机", aliases={"start", "kj"}, permission=PRIVATE_OR_GROUP, priority=5)
 
 
 @start_cmd.handle()
-async def handle_start(bot: Bot, event: GroupAtMessageCreateEvent):
+async def handle_start(bot: Bot, event: C2CMessageCreateEvent | GroupAtMessageCreateEvent):
     try:
         jwt, row = await _get_user_jwt(bot, event)
     except RuntimeError:
@@ -254,12 +255,12 @@ async def handle_start(bot: Bot, event: GroupAtMessageCreateEvent):
 # ─── 命令：/释放时间 ──────────────────────────────────────────
 
 idle_cmd = on_command(
-    "释放时间", aliases={"idle", "sfsj", "剩余时间"}, permission=GROUP, priority=5
+    "释放时间", aliases={"idle", "sfsj", "剩余时间"}, permission=PRIVATE_OR_GROUP, priority=5
 )
 
 
 @idle_cmd.handle()
-async def handle_idle(bot: Bot, event: GroupAtMessageCreateEvent):
+async def handle_idle(bot: Bot, event: C2CMessageCreateEvent | GroupAtMessageCreateEvent):
     try:
         jwt, _ = await _get_user_jwt(bot, event)
     except RuntimeError:
@@ -280,12 +281,12 @@ async def handle_idle(bot: Bot, event: GroupAtMessageCreateEvent):
 # ─── 命令：/我的信息 ──────────────────────────────────────────
 
 info_cmd = on_command(
-    "我的信息", aliases={"info", "wdxx", "profile"}, permission=GROUP, priority=5
+    "我的信息", aliases={"info", "wdxx", "profile"}, permission=PRIVATE_OR_GROUP, priority=5
 )
 
 
 @info_cmd.handle()
-async def handle_info(bot: Bot, event: GroupAtMessageCreateEvent):
+async def handle_info(bot: Bot, event: C2CMessageCreateEvent | GroupAtMessageCreateEvent):
     try:
         jwt, row = await _get_user_jwt(bot, event)
     except RuntimeError:
@@ -318,9 +319,20 @@ _fallback = on_message(permission=PRIVATE, priority=99, block=False)
 @_fallback.handle()
 async def handle_fallback(event: C2CMessageCreateEvent):
     text = event.get_plaintext().strip()
-    if text.startswith("/"):
+    # 所有已知命令，留给 on_command handler 处理
+    _cmds = ("/登录", "/login", "/状态", "/status", "/zt",
+             "/开机", "/start", "/kj", "/释放时间", "/idle", "/sfsj",
+             "/剩余时间", "/我的信息", "/info", "/wdxx", "/profile")
+    if any(text.startswith(c) for c in _cmds):
         return
-    await _fallback.finish("发送 /登录 用户名 密码 开始使用")
+    await _fallback.finish(
+        "可用命令：\n"
+        "  /登录 用户名 密码\n"
+        "  /状态\n"
+        "  /开机\n"
+        "  /释放时间\n"
+        "  /我的信息"
+    )
 
 
 # ─── 启动事件 ─────────────────────────────────────────────────
