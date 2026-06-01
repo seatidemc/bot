@@ -312,7 +312,7 @@ async def handle_info(bot: Bot, event: GroupAtMessageCreateEvent):
 
 from nonebot import on_message
 
-_fallback = on_message(permission=PRIVATE, priority=99, block=False)
+_fallback = on_message(permission=PRIVATE, priority=99)
 
 
 @_fallback.handle()
