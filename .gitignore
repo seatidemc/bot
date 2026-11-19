@@ -4,3 +4,5 @@ __pycache__/
 data/
 napcat/
 .venv/
+.env.dev
+.env.prod

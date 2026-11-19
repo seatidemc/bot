@@ -10,7 +10,7 @@ cd ~/code/seatide2026/bot
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 mkdir -p data          # SQLite 目录，aiosqlite 不会自动建
-python bot.py
+SEATIDE_ENV=dev python bot.py
 ```
 
 无需 Docker，无需 NapCat，无需 QQ 客户端。Bot 通过 WebSocket 直连 QQ 开放平台。
@@ -43,6 +43,8 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `src/plugins/mc_client/config.py` | 从 NoneBot 配置读取环境变量。`BOT_PASSWORD` 强制 `str()` 转换以防 pydantic 把纯数字当 int |
 | `src/plugins/mc_client/api.py` | 对后端 API 的 HTTP 封装。自动拼接 `X-Bot-Key` + `Bearer`，后端响应格式 `{"data": ...}` / `{"details": "..."}` 均正确处理。`sse_watch()` 按标准 SSE 解析 `event:` / `data:` 行 |
 | `src/plugins/mc_client/db.py` | aiosqlite 持久化 `user_tokens` 表（`user_openid → jwt_token, username, whitelist_uuid, jwt_exp_ts`） |
+| `src/plugins/ai_chat/` | DeepSeek 多轮对话插件：`config.py` 读配置，`api.py` 调 `/chat/completions`，`memory.py` 进程内保存每用户最近 N 轮上下文，`__init__.py` 注册私聊 / 群 @ 聊天与 `/重置对话` |
+| `src/plugins/http_api/` | 对外 HTTP 接口：`POST /bot/group-message` 向固定群发消息，`GET /bot/health` 探活；token 鉴权，随 NoneBot 的 FastAPI 驱动启动 |
 | `test_mock_client.py` | [已废弃] 旧版 OneBot v11 模拟客户端，迁移至 adapter-qq 后不再可用 |
 
 ## 配置
@@ -56,8 +58,16 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `BOT_KEY` | 与后端 `configs/main.toml` 的 `bot_key` 一致 |
 | `BOT_USERNAME` | bot 自身的后端账号（operator 权限，手动 `create_user` 创建） |
 | `BOT_PASSWORD` | 纯数字密码须加引号 `"123"`，否则 pydantic 解析为 int 导致后端 JSON 反序列化失败 |
-| `GROUP_OPENID` | 目标群 openid。首次启动后在群里 @bot，从日志获取填入 |
+| `GROUP_OPENID` | 目标群 openid。首次收到群消息会自动记录并写入 `data/group_openid.txt`，重启后继续生效；也可手动填入固定使用 |
 | `QQ_BOTS` | JSON 数组，含 bot 的 `id`、`token`、`secret`、`intent` |
+| `DEEPSEEK_API_KEY` | DeepSeek API Key，留空则 AI 对话关闭（私聊自动回复命令帮助） |
+| `DEEPSEEK_BASE_URL` | 默认 `https://api.deepseek.com` |
+| `DEEPSEEK_MODEL` | 默认 `deepseek-chat` |
+| `AI_MAX_TURNS` | 每用户保留的对话轮数，默认 10 |
+| `AI_HISTORY_TTL` | 上下文空闲过期秒数，默认 3600 |
+| `HOST` / `PORT` | HTTP 服务监听地址，默认 `127.0.0.1:8081`，建议只监听本机 |
+| `HTTP_API_TOKEN` | 调用接口所需的 token，请求头 `X-API-Token` 或 `Authorization: Bearer <token>` |
+| `HTTP_API_MAX_CHARS` | 单条消息最大字符数，默认 2000 |
 
 ## 命令
 
@@ -120,3 +130,83 @@ bot 依赖后端以下改动（已在 `~/code/go-aliyunmc-v2` 中实施）：
 - `GROUP_OPENID` 首次为空是正常的：启动后在群里 @bot，从日志复制 openid 填入后重启即可
 - `.env`、`data/`、`.venv/` 均被 `.gitignore` 排除
 - 项目无 CI/CD，服务器上直接 `python bot.py` 配合 systemd 或 screen/tmux 运行
+
+## 多环境配置
+
+配置文件拆分为两份，由 `bot.py` 根据 `SEATIDE_ENV` 选择加载（默认 `dev`）：
+
+| 文件 | 用途 |
+|---|---|
+| `.env.dev` | 开发环境，`LOG_LEVEL=DEBUG` |
+| `.env.prod` | 生产环境，`LOG_LEVEL=INFO` |
+
+```bash
+SEATIDE_ENV=dev  python bot.py   # 开发
+SEATIDE_ENV=prod python bot.py   # 生产
+```
+
+`start.sh` 同样支持：`SEATIDE_ENV=prod ./start.sh`。两个文件均加入 `.gitignore`，避免 API Key 进入仓库。
+
+## DeepSeek AI 对话
+
+- 私聊任意非命令文本、或群里 @bot 发任意文本 → 调用 DeepSeek 回复
+- `/重置对话`（别名 `reset`、`清空对话`、`clear`）清空当前用户的上下文
+- 上下文保存在进程内存，`AI_HISTORY_TTL` 秒无活动自动过期，重启丢失
+- 同一用户的消息串行处理，全局并发受 `AI_MAX_CONCURRENCY` 限制
+- 未配置 `DEEPSEEK_API_KEY` 时 AI 匹配器不启用，`mc_client` 的兜底提示继续生效
+- 调用失败（超时 / 401 / 402 / 429）会直接把原因回复给用户
+
+## Windows 本地运行
+
+```bat
+python -m venv .venv
+.venv\Scripts\activate
+pip install -e . -i https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+之后双击 `run_dev.bat` / `run_prod.bat`，或手动：
+
+```bat
+set SEATIDE_ENV=dev
+.venv\Scripts\python.exe bot.py
+```
+
+PowerShell 用 `$env:SEATIDE_ENV="prod"`。默认 pip 源缺少 `nonebot-adapter-qq` 时，加 `-i https://pypi.tuna.tsinghua.edu.cn/simple`。
+
+## 对外 HTTP 接口
+
+NoneBot 驱动改为 `~fastapi+~httpx+~websockets`，机器人在 QQ WebSocket 之外额外启动一个 HTTP 服务（默认 `127.0.0.1:8081`），供后端或脚本触发群消息。
+
+### 发送群消息
+
+```bash
+curl -X POST http://127.0.0.1:8081/bot/group-message   -H "Content-Type: application/json"   -H "X-API-Token: ${HTTP_API_TOKEN}"   -d '{"message": "服务器将在 10 分钟后重启"}'
+```
+
+成功返回：
+
+```json
+{"ok": true, "group_openid": "xxx", "message_id": "xxx"}
+```
+
+失败返回：
+
+| 状态码 | 含义 |
+|---|---|
+| 400 | message 为空或超过 `HTTP_API_MAX_CHARS` |
+| 401 | token 缺失或错误 |
+| 502 | QQ 接口发送失败（权限、频率限制等） |
+| 503 | 接口未配置 token、机器人未连接、群 openid 未知 |
+
+### 探活
+
+```bash
+curl http://127.0.0.1:8081/bot/health
+# {"ok": true, "bot_ready": true, "group_configured": true}
+```
+
+### 注意
+
+- 目标群固定为 `GROUP_OPENID`，未配置时使用首次收到群消息自动记录的 openid，并持久化到 `data/group_openid.txt`。
+- 服务默认只监听 `127.0.0.1`，不要随意改成 `0.0.0.0`；token 泄露等同于可向群内发消息。
+- QQ 官方接口对主动消息有频率和权限限制（被动回复 5 分钟内 5 条、主动推送需平台开通能力）。若返回 502，先查开放平台的消息权限与配额。

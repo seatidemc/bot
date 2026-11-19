@@ -3,6 +3,8 @@
 set -e
 
 SCREEN_NAME="seatide-bot"
+ENV_NAME="${SEATIDE_ENV:-dev}"
+export SEATIDE_ENV="$ENV_NAME"
 BOT_DIR="$HOME/bot"
 
 # ---- 处理命令 ----
@@ -47,7 +49,7 @@ fi
 mkdir -p data
 
 # ---- 启动 ----
-echo "🚀 启动 Bot (screen: $SCREEN_NAME)..."
+echo "🚀 启动 Bot (环境: $ENV_NAME, screen: $SCREEN_NAME)..."
 screen -dmS "$SCREEN_NAME" bash -c "
     cd '$BOT_DIR'
     source .venv/bin/activate

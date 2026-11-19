@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from pathlib import Path
 
 import aiosqlite
 
@@ -11,6 +12,7 @@ _lock = asyncio.Lock()
 
 async def init(db_path: str = "data/bot.db") -> None:
     global _DB
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     _DB = await aiosqlite.connect(db_path)
     _DB.row_factory = aiosqlite.Row
     await _DB.execute("PRAGMA journal_mode=WAL")

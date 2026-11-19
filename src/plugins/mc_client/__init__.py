@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 
-from nonebot import get_bot, get_driver, on_command
+from nonebot import get_bot, get_driver, on_command, on_message
 from nonebot.adapters.qq import (
     Bot,
     C2CMessageCreateEvent,
@@ -26,8 +27,18 @@ _BOT_JWT: str = ""
 _BOT_JWT_EXP: int = 0
 _BOT_LOCK = asyncio.Lock()
 
-# 自动发现的群 openid（首次收到群消息时记录）
-_discovered_group_openid: str = ""
+# 自动发现的群 openid：首次收到群消息时记录，并持久化到 data/group_openid.txt
+_GROUP_OPENID_FILE = Path("data/group_openid.txt")
+
+
+def _load_discovered_group_openid() -> str:
+    try:
+        return _GROUP_OPENID_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+_discovered_group_openid: str = _load_discovered_group_openid()
 
 
 async def _ensure_bot_jwt() -> str:
@@ -54,6 +65,11 @@ def _get_group_openid() -> str:
     if config.GROUP_OPENID:
         return config.GROUP_OPENID
     return _discovered_group_openid
+
+
+def get_group_openid() -> str:
+    """对外暴露：当前目标群 openid（配置优先，其次自动发现）。"""
+    return _get_group_openid()
 
 
 async def _send_group(msg: str) -> None:
@@ -83,6 +99,27 @@ async def _is_group(event) -> bool:
 PRIVATE = Permission(_is_private)
 GROUP = Permission(_is_group)
 PRIVATE_OR_GROUP = PRIVATE | GROUP
+
+
+# ─── 自动发现群 openid ────────────────────────────────────────
+
+_group_probe = on_message(priority=1, block=False)
+
+
+@_group_probe.handle()
+async def _probe_group(event: GroupAtMessageCreateEvent):
+    """收到任意群消息时记录群 openid，供 SSE 推送和 HTTP 接口使用。"""
+    global _discovered_group_openid
+    openid = getattr(event, "group_openid", "")
+    if not openid or openid == _discovered_group_openid:
+        return
+    _discovered_group_openid = openid
+    try:
+        _GROUP_OPENID_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _GROUP_OPENID_FILE.write_text(openid + "\n", encoding="utf-8")
+    except OSError:
+        logger.warning("写入 data/group_openid.txt 失败，仅保存在内存中")
+    logger.info(f"已记录群 openid: {openid}（也可填入 GROUP_OPENID 固定使用）")
 
 
 # ─── SSE 状态监听 ─────────────────────────────────────────────
@@ -311,8 +348,6 @@ async def handle_info(bot: Bot, event: C2CMessageCreateEvent | GroupAtMessageCre
 
 # ─── 兜底：私聊非命令消息 ─────────────────────────────────────
 
-from nonebot import on_message
-
 _fallback = on_message(permission=PRIVATE, priority=99, block=False)
 
 
@@ -322,7 +357,8 @@ async def handle_fallback(event: C2CMessageCreateEvent):
     # 所有已知命令，留给 on_command handler 处理
     _cmds = ("/登录", "/login", "/状态", "/status", "/zt",
              "/开机", "/start", "/kj", "/释放时间", "/idle", "/sfsj",
-             "/剩余时间", "/我的信息", "/info", "/wdxx", "/profile")
+             "/剩余时间", "/我的信息", "/info", "/wdxx", "/profile",
+             "/重置对话", "/reset", "/清空对话", "/clear")
     if any(text.startswith(c) for c in _cmds):
         return
     await _fallback.finish(
@@ -331,7 +367,8 @@ async def handle_fallback(event: C2CMessageCreateEvent):
         "  /状态\n"
         "  /开机\n"
         "  /释放时间\n"
-        "  /我的信息"
+        "  /我的信息\n"
+        "  /重置对话"
     )
 
 
