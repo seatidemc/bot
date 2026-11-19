@@ -3,34 +3,52 @@
 from __future__ import annotations
 
 import asyncio
+import time
+from collections import deque
 
 from nonebot import get_driver, on_command, on_message
 from nonebot.adapters.qq import (
     Bot,
     C2CMessageCreateEvent,
-    GroupAtMessageCreateEvent,
+    GroupMessageCreateEvent,
 )
 from nonebot.log import logger
 from nonebot.permission import Permission
 from nonebot.rule import Rule
 
+from ..mc_client import is_group_addressed
 from . import api, config, memory
 
 # ─── 权限：私聊 / 群聊 ────────────────────────────────────────
 
 PRIVATE = Permission(lambda event: isinstance(event, C2CMessageCreateEvent))
-GROUP = Permission(lambda event: isinstance(event, GroupAtMessageCreateEvent))
+GROUP = Permission(lambda event: is_group_addressed(event))
+GROUP_ANY = Permission(lambda event: isinstance(event, GroupMessageCreateEvent))
 PRIVATE_OR_GROUP = PRIVATE | GROUP
+PRIVATE_OR_ANY_GROUP = PRIVATE | GROUP_ANY
 
-# 没有 API Key 时整个聊天匹配器不生效，退回 mc_client 的命令提示
-ai_enabled = Rule(lambda event: config.AI_ENABLED)
+
+def _chat_allowed(event) -> bool:
+    """决定哪些消息会进入 AI 聊天匹配器。"""
+    if not config.AI_ENABLED:
+        return False
+    if isinstance(event, C2CMessageCreateEvent):
+        return True
+    if not isinstance(event, GroupMessageCreateEvent):
+        return False
+    if getattr(getattr(event, "author", None), "bot", False):
+        return False
+    return is_group_addressed(event) or config.AI_GROUP_CHAT_WITHOUT_AT
+
+
+chat_allowed = Rule(_chat_allowed)
 
 _user_locks: dict[str, asyncio.Lock] = {}
 _semaphore = asyncio.Semaphore(max(1, config.AI_MAX_CONCURRENCY))
 
 
 def _history_key(event) -> str:
-    if isinstance(event, GroupAtMessageCreateEvent):
+    if isinstance(event, GroupMessageCreateEvent):
         return f"group:{event.group_openid}:{event.get_user_id()}"
     return f"c2c:{event.get_user_id()}"
 
@@ -41,6 +59,26 @@ def _lock_for(key: str) -> asyncio.Lock:
         lock = asyncio.Lock()
         _user_locks[key] = lock
     return lock
+
+
+_auto_chat_times: dict[str, deque[float]] = {}
+_auto_chat_lock = asyncio.Lock()
+
+
+async def _allow_auto_chat(group_openid: str) -> bool:
+    """未 @ 的群聊按群限流；返回是否允许本次自动回复。"""
+    limit = config.AI_GROUP_CHAT_PER_MINUTE
+    if limit <= 0:
+        return False
+    now = time.monotonic()
+    async with _auto_chat_lock:
+        times = _auto_chat_times.setdefault(group_openid, deque())
+        while times and now - times[0] >= 60:
+            times.popleft()
+        if len(times) >= limit:
+            return False
+        times.append(now)
+        return True
 
 
 HELP_TEXT = (
@@ -58,19 +96,33 @@ HELP_TEXT = (
 # ─── 聊天匹配器 ──────────────────────────────────────────────
 
 chat = on_message(
-    rule=ai_enabled, permission=PRIVATE_OR_GROUP, priority=10, block=True
+    rule=chat_allowed, permission=PRIVATE_OR_ANY_GROUP, priority=10, block=True
 )
 
 
 @chat.handle()
 async def handle_chat(bot: Bot, event):
     text = event.get_plaintext().strip()
-    if not text:
-        await chat.finish("目前只支持文字聊天哦，直接发文字给我就行～")
+    is_group = isinstance(event, GroupMessageCreateEvent)
+    addressed = is_group_addressed(event) if is_group else False
 
-    # 命令交给 mc_client 处理；这里兜住群里权限不符或拼错的命令，避免内容被发到 AI
+    if not text:
+        if addressed or not is_group:
+            await chat.finish("目前只支持文字聊天哦，直接发文字给我就行～")
+        return
+
+    # 命令交给 mc_client 处理；群里没 @ 的命令直接忽略，避免误触发和刷屏
     if text.startswith(("/", "／")):
-        await chat.finish(HELP_TEXT)
+        if addressed:
+            await chat.finish(HELP_TEXT)
+        return
+
+    if is_group and not addressed:
+        if not await _allow_auto_chat(event.group_openid):
+            logger.debug(
+                f"自动聊天达到每分钟上限 {config.AI_GROUP_CHAT_PER_MINUTE}，跳过"
+            )
+            return
 
     if len(text) > config.AI_MAX_INPUT_CHARS:
         text = text[: config.AI_MAX_INPUT_CHARS]
@@ -123,5 +175,9 @@ async def handle_reset(event):
 async def _on_startup():
     if config.AI_ENABLED:
         logger.info(f"DeepSeek 对话已启用（模型 {config.DEEPSEEK_MODEL}）")
+        if config.AI_GROUP_CHAT_WITHOUT_AT:
+            logger.info(
+                f"群内自动聊天已开启，每分钟最多 {config.AI_GROUP_CHAT_PER_MINUTE} 条"
+            )
     else:
         logger.warning("DEEPSEEK_API_KEY 未配置，AI 对话功能已关闭")

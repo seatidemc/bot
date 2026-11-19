@@ -9,7 +9,9 @@ Seatide Minecraft 服务器的 QQ 群机器人，基于 [NoneBot2](https://noneb
 - 群内命令：服务器状态、触发开机、查看自动归档倒计时、查看账号信息
 - 私聊 `/登录` 换取后端 JWT，绑定 QQ 与网页账号
 - 服务器上线/离线、实例状态变更自动推送到群（SSE）
-- DeepSeek AI 对话：私聊任意文字、群里 @bot 任意文字
+- DeepSeek AI 对话：私聊任意文字，群内 @bot 或开启自动聊天后直接发文字
+- 群内自动聊天支持每分钟限流，回复走被动消息，不占用主动消息额度
+- 支持群消息全量模式（GROUP_MESSAGE_CREATE），只响应 @、回复或自动聊天
 - HTTP 接口：后端或脚本调用后在群内发消息
 - 两套配置：`.env.dev`（开发）与 `.env.prod`（生产）
 
@@ -121,7 +123,8 @@ QQ_BOTS='[
 - `id` 是字符串，即使 AppID 是纯数字也要加引号
 - `secret` 对应 AppSecret，切勿泄露
 - `token` 字段在当前 `nonebot-adapter-qq 1.7.4` 中不会被使用，可以省略
-- 群里必须 @bot 才会收到消息
+- 默认只有 @bot 的群消息会推送；群主开启「获取群内全部消息」后会收到 `GROUP_MESSAGE_CREATE` 全量事件
+- 收到全量消息后，机器人默认仍只响应 @ 或回复它的消息；开启自动聊天后才会参与普通群聊
 - 未上线的机器人只能在沙箱测试群使用，测试群人数上限 20
 
 ### 主要配置项
@@ -143,6 +146,8 @@ QQ_BOTS='[
 | `AI_MAX_TURNS` | `10` | 每个用户保留的对话轮数 |
 | `AI_HISTORY_TTL` | `3600` | 上下文空闲过期秒数 |
 | `AI_MAX_REPLY_CHARS` | `1200` | 回复最大字符数，超出截断 |
+| `AI_GROUP_CHAT_WITHOUT_AT` | `false` | 群内不 @ 也参与聊天；回复走被动消息 |
+| `AI_GROUP_CHAT_PER_MINUTE` | `5` | 每个群每分钟自动聊天回复上限，0 关闭 |
 | `HOST` / `PORT` | `127.0.0.1:8081` | HTTP 服务监听地址 |
 | `HTTP_API_TOKEN` | 无 | 调用接口的鉴权 token |
 | `HTTP_API_MAX_CHARS` | `2000` | 接口单条消息最大字符数 |
@@ -160,7 +165,7 @@ QQ_BOTS='[
 | `/我的信息` | `info`、`wdxx`、`profile` | 群/私聊 | 用户名、角色、白名单绑定 |
 | `/重置对话` | `reset`、`清空对话`、`clear` | 群/私聊 | 清空 AI 上下文 |
 
-群内命令需要 @bot。未登录用户执行需要鉴权的命令时，bot 会直接在当前会话回复提醒。
+群内命令需要 @bot；开启自动聊天后普通聊天不需要 @，但命令仍然需要。未登录用户执行需要鉴权的命令时，bot 会直接在当前会话回复提醒。
 
 ## AI 对话
 
@@ -171,6 +176,25 @@ QQ_BOTS='[
 - `/重置对话` 可手动清空
 - 未配置 `DEEPSEEK_API_KEY` 时 AI 功能关闭，私聊会收到命令帮助
 - 同一个用户的消息串行处理，全局并发受 `AI_MAX_CONCURRENCY` 限制
+
+### 自动聊天（不 @）
+
+在 `.env.dev` 或 `.env.prod` 中设置：
+
+```env
+AI_GROUP_CHAT_WITHOUT_AT=true
+AI_GROUP_CHAT_PER_MINUTE=5
+```
+
+行为：
+
+- 群内普通文字不需要 @ 机器人，也会进入 AI 对话
+- 每个群每分钟最多自动回复 `AI_GROUP_CHAT_PER_MINUTE` 条，超出后静默跳过
+- @ 机器人的消息不受该限制，随时响应
+- 命令仍然需要 @bot，不带 @ 的 `/状态` 等命令不会触发
+- 机器人自己和其他机器人发的消息会被忽略，避免循环
+- 自动回复使用触发消息的 `msg_id` 作为被动回复，每条触发消息只回一次，不占用主动消息额度
+- 自动回复是即时发生的，处于 QQ 被动回复的 5 分钟窗口内
 
 ## HTTP 接口
 
@@ -296,3 +320,7 @@ pip install -e . -i https://pypi.tuna.tsinghua.edu.cn/simple
 # 离线加载插件（不连接 QQ）
 .venv\Scripts\python.exe -c "import nonebot; nonebot.init(_env_file='.env.dev'); from nonebot.adapters.qq import Adapter; nonebot.get_driver().register_adapter(Adapter); [nonebot.load_plugin(n) for n in ('src.plugins.mc_client','src.plugins.ai_chat','src.plugins.http_api')]; print('loaded')"
 ```
+
+## 更新记录
+
+- 2026-11-20：适配群消息全量模式 `GROUP_MESSAGE_CREATE`；新增群内不 @ 自动聊天、每分钟限流和被动回复额度说明

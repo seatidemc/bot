@@ -33,5 +33,22 @@ AI_MAX_INPUT_CHARS: int = int(getattr(_cfg, "ai_max_input_chars", 2000))
 AI_MAX_REPLY_CHARS: int = int(getattr(_cfg, "ai_max_reply_chars", 1200))
 AI_MAX_CONCURRENCY: int = int(getattr(_cfg, "ai_max_concurrency", 4))
 
+
+def _as_bool(value: object) -> bool:
+    """环境变量里的布尔值可能以字符串形式出现。"""
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+# 群内不 @ 也参与聊天，回复走被动消息
+AI_GROUP_CHAT_WITHOUT_AT: bool = _as_bool(
+    getattr(_cfg, "ai_group_chat_without_at", False)
+)
+# 每分钟最多自动聊天回复次数（只统计未 @ 的群消息），0 表示关闭
+AI_GROUP_CHAT_PER_MINUTE: int = int(
+    getattr(_cfg, "ai_group_chat_per_minute", 5)
+)
+
 # 没有 API Key 时关闭 AI 对话，退回 mc_client 的命令提示
 AI_ENABLED: bool = bool(DEEPSEEK_API_KEY)

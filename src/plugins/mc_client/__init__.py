@@ -10,7 +10,7 @@ from nonebot import get_bot, get_driver, on_command, on_message
 from nonebot.adapters.qq import (
     Bot,
     C2CMessageCreateEvent,
-    GroupAtMessageCreateEvent,
+    GroupMessageCreateEvent,
     Message,
     MessageSegment,
 )
@@ -92,8 +92,28 @@ async def _is_private(event) -> bool:
     return isinstance(event, C2CMessageCreateEvent)
 
 
+def is_group_addressed(event) -> bool:
+    """群消息是否在呼叫机器人：@ 它或回复它的消息。"""
+    if not isinstance(event, GroupMessageCreateEvent):
+        return False
+    if getattr(event, "to_me", False):
+        return True
+    for mention in getattr(event, "mentions", None) or []:
+        if getattr(mention, "scope", "single") == "single" and getattr(
+            mention, "is_you", False
+        ):
+            return True
+    try:
+        for seg in event.get_message():
+            if seg.type == "mention_user" and seg.data.get("is_bot"):
+                return True
+    except Exception:
+        pass
+    return False
+
+
 async def _is_group(event) -> bool:
-    return isinstance(event, GroupAtMessageCreateEvent)
+    return is_group_addressed(event)
 
 
 PRIVATE = Permission(_is_private)
@@ -107,9 +127,12 @@ _group_probe = on_message(priority=1, block=False)
 
 
 @_group_probe.handle()
-async def _probe_group(event: GroupAtMessageCreateEvent):
+async def _probe_group(event: GroupMessageCreateEvent):
     """收到任意群消息时记录群 openid，供 SSE 推送和 HTTP 接口使用。"""
     global _discovered_group_openid
+    logger.debug(
+        f"群消息: {type(event).__name__} to_me={getattr(event, 'to_me', False)}"
+    )
     openid = getattr(event, "group_openid", "")
     if not openid or openid == _discovered_group_openid:
         return
@@ -208,7 +231,7 @@ async def handle_login(event: C2CMessageCreateEvent):
 # ─── 辅助：获取群聊用户的 JWT ──────────────────────────────────
 
 async def _get_user_jwt(
-    bot: Bot, event: C2CMessageCreateEvent | GroupAtMessageCreateEvent
+    bot: Bot, event: C2CMessageCreateEvent | GroupMessageCreateEvent
 ) -> tuple[str, dict]:
     """从数据库获取发消息用户的 JWT。未登录则直接回复提醒。"""
     user_id = event.get_user_id()
@@ -228,7 +251,7 @@ status_cmd = on_command("状态", aliases={"status", "zt"}, permission=PRIVATE_O
 
 
 @status_cmd.handle()
-async def handle_status(bot: Bot, event: C2CMessageCreateEvent | GroupAtMessageCreateEvent):
+async def handle_status(bot: Bot, event: C2CMessageCreateEvent | GroupMessageCreateEvent):
     try:
         jwt, _ = await _get_user_jwt(bot, event)
     except RuntimeError:
@@ -269,7 +292,7 @@ start_cmd = on_command("开机", aliases={"start", "kj"}, permission=PRIVATE_OR_
 
 
 @start_cmd.handle()
-async def handle_start(bot: Bot, event: C2CMessageCreateEvent | GroupAtMessageCreateEvent):
+async def handle_start(bot: Bot, event: C2CMessageCreateEvent | GroupMessageCreateEvent):
     try:
         jwt, row = await _get_user_jwt(bot, event)
     except RuntimeError:
@@ -297,7 +320,7 @@ idle_cmd = on_command(
 
 
 @idle_cmd.handle()
-async def handle_idle(bot: Bot, event: C2CMessageCreateEvent | GroupAtMessageCreateEvent):
+async def handle_idle(bot: Bot, event: C2CMessageCreateEvent | GroupMessageCreateEvent):
     try:
         jwt, _ = await _get_user_jwt(bot, event)
     except RuntimeError:
@@ -323,7 +346,7 @@ info_cmd = on_command(
 
 
 @info_cmd.handle()
-async def handle_info(bot: Bot, event: C2CMessageCreateEvent | GroupAtMessageCreateEvent):
+async def handle_info(bot: Bot, event: C2CMessageCreateEvent | GroupMessageCreateEvent):
     try:
         jwt, row = await _get_user_jwt(bot, event)
     except RuntimeError:

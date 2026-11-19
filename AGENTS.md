@@ -65,6 +65,8 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `DEEPSEEK_MODEL` | 默认 `deepseek-chat` |
 | `AI_MAX_TURNS` | 每用户保留的对话轮数，默认 10 |
 | `AI_HISTORY_TTL` | 上下文空闲过期秒数，默认 3600 |
+| `AI_GROUP_CHAT_WITHOUT_AT` | 群内不 @ 是否参与聊天，默认 false |
+| `AI_GROUP_CHAT_PER_MINUTE` | 每个群每分钟自动聊天回复上限，默认 5 |
 | `HOST` / `PORT` | HTTP 服务监听地址，默认 `127.0.0.1:8081`，建议只监听本机 |
 | `HTTP_API_TOKEN` | 调用接口所需的 token，请求头 `X-API-Token` 或 `Authorization: Bearer <token>` |
 | `HTTP_API_MAX_CHARS` | 单条消息最大字符数，默认 2000 |
@@ -126,6 +128,7 @@ bot 依赖后端以下改动（已在 `~/code/go-aliyunmc-v2` 中实施）：
 - 后端 Go 的 State 结构体字段大写开头（`Value`、`Error`、`UpdatedAt`），Python 侧取值注意大小写
 - 后端错误响应字段名是 `details` 不是 `error`
 - QQ 官方 API 用 `openid` 标识用户和群，不是 QQ 号
+- 群主开启「获取群内全部消息」后，事件类型从 `GROUP_AT_MESSAGE_CREATE` 变为 `GROUP_MESSAGE_CREATE`；插件统一用 `GroupMessageCreateEvent` 基类，并用 `event.to_me` / `mentions.is_you` 判断是否被 @
 - `QQ_BOTS` 的 intent 只开了 `c2c_group_at_messages`，bot 只能收到私聊和群 @ 消息
 - `GROUP_OPENID` 首次为空是正常的：启动后在群里 @bot，从日志复制 openid 填入后重启即可
 - `.env`、`data/`、`.venv/` 均被 `.gitignore` 排除
@@ -153,6 +156,7 @@ SEATIDE_ENV=prod python bot.py   # 生产
 - `/重置对话`（别名 `reset`、`清空对话`、`clear`）清空当前用户的上下文
 - 上下文保存在进程内存，`AI_HISTORY_TTL` 秒无活动自动过期，重启丢失
 - 同一用户的消息串行处理，全局并发受 `AI_MAX_CONCURRENCY` 限制
+- 开启 `AI_GROUP_CHAT_WITHOUT_AT` 后，未 @ 的群消息也会进入 AI；按群每分钟限流，回复走被动消息 `msg_id`，不使用主动消息额度
 - 未配置 `DEEPSEEK_API_KEY` 时 AI 匹配器不启用，`mc_client` 的兜底提示继续生效
 - 调用失败（超时 / 401 / 402 / 429）会直接把原因回复给用户
 
