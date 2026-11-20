@@ -6,8 +6,7 @@ Seatide Minecraft 服务器的 QQ 群机器人，基于 [NoneBot2](https://noneb
 
 ## 功能
 
-- 群内命令：服务器状态、触发开机、查看自动归档倒计时、查看账号信息
-- 私聊 `/登录` 换取后端 JWT，绑定 QQ 与网页账号
+- 群内命令：服务器状态（在线、人数、资源占用、预计释放时间）、一键启动服务器
 - DeepSeek AI 对话：私聊任意文字，群内 @bot 或开启自动聊天后直接发文字
 - 群内自动聊天支持每分钟限流，回复走被动消息，不占用主动消息额度
 - 支持群消息全量模式（GROUP_MESSAGE_CREATE），只响应 @、回复或自动聊天
@@ -18,14 +17,14 @@ Seatide Minecraft 服务器的 QQ 群机器人，基于 [NoneBot2](https://noneb
 
 ```
 bot.py                          # 入口，选择环境并加载插件
-src/plugins/mc_client/          # QQ 命令、SQLite 持久化
+src/plugins/lab_client/         # QQ 命令（对接后端 /bot-v1）
 src/plugins/ai_chat/            # DeepSeek 多轮对话
 src/plugins/http_api/           # 对外 HTTP 接口
 .env.example                    # 配置模板
 .env.dev / .env.prod            # 实际配置（已 gitignore）
 start.sh                        # Linux / macOS 一键启动（dev 前台 / prod screen）
 run_dev.bat / run_prod.bat      # Windows 启动脚本
-data/                           # SQLite 与群 openid（已 gitignore）
+data/                           # 群 openid 等运行数据（已 gitignore）
 AGENTS.md                       # 面向开发者的实现细节
 ```
 
@@ -159,14 +158,10 @@ QQ_BOTS='[
 
 | 命令 | 别名 | 范围 | 说明 |
 |---|---|---|---|
-| `/登录 用户名 密码` | `login` | 私聊 | 换取后端 JWT，有效期 3 个月 |
-| `/状态` | `status`、`zt` | 群/私聊 | 活跃实例、服务器在线状态与人数 |
-| `/开机` | `start`、`kj` | 群/私聊 | 触发 `start_server` 任务 |
-| `/释放时间` | `idle`、`sfsj`、`剩余时间` | 群/私聊 | 自动归档倒计时 |
-| `/我的信息` | `info`、`wdxx`、`profile` | 群/私聊 | 用户名、角色、白名单绑定 |
-| `/重置对话` | `reset`、`清空对话`、`clear` | 群/私聊 | 清空 AI 上下文 |
+| `/状态` | `status`、`zt` | 群/私聊 | 服务器在线状态、IP、玩家数、运行时长、内存/CPU、预计释放时间 |
+| `/启动` | `start`、`qd` | 群/私聊 | 触发 `oneclick_start_game` 一键启动任务 |
 
-群内命令需要 @bot；开启自动聊天后普通聊天不需要 @，但命令仍然需要。未登录用户执行需要鉴权的命令时，bot 会直接在当前会话回复提醒。
+群内命令需要 @bot；开启自动聊天后普通聊天不需要 @，但命令仍然需要。命令不需要登录，后端只按来源地址限制访问频率。
 
 ## AI 对话
 
@@ -174,7 +169,6 @@ QQ_BOTS='[
 - 群内 @bot 后发任意文字
 - 每次请求会带上该用户最近 `AI_MAX_TURNS` 轮上下文，空闲超过 `AI_HISTORY_TTL` 秒自动清空
 - 上下文只保存在进程内存，重启后丢失
-- `/重置对话` 可手动清空
 - 未配置 `DEEPSEEK_API_KEY` 时 AI 功能关闭，私聊会收到命令帮助
 - 同一个用户的消息串行处理，全局并发受 `AI_MAX_CONCURRENCY` 限制
 - 每次成功调用都会以 INFO 级别记录一行 `DeepSeek 用量`：prompt / completion / 思考 token / 缓存命中情况，便于观察成本构成
@@ -245,7 +239,6 @@ curl http://127.0.0.1:8081/bot/health
 
 | 路径 | 内容 |
 |---|---|
-| `data/bot.db` | 用户 JWT、用户名、白名单 UUID |
 | `data/group_openid.txt` | 自动记录的群 openid |
 
 `data/`、`.env.dev`、`.env.prod`、`.venv/` 均在 `.gitignore` 中。
@@ -309,11 +302,12 @@ pip install -e . -i https://pypi.tuna.tsinghua.edu.cn/simple
 .venv\Scripts\python.exe -m compileall -q bot.py src/plugins
 
 # 离线加载插件（不连接 QQ）
-.venv\Scripts\python.exe -c "import nonebot; nonebot.init(_env_file='.env.dev'); from nonebot.adapters.qq import Adapter; nonebot.get_driver().register_adapter(Adapter); [nonebot.load_plugin(n) for n in ('src.plugins.mc_client','src.plugins.ai_chat','src.plugins.http_api')]; print('loaded')"
+.venv\Scripts\python.exe -c "import nonebot; nonebot.init(_env_file='.env.dev'); from nonebot.adapters.qq import Adapter; nonebot.get_driver().register_adapter(Adapter); [nonebot.load_plugin(n) for n in ('src.plugins.lab_client','src.plugins.ai_chat','src.plugins.http_api')]; print('loaded')"
 ```
 
 ## 更新记录
 
+- 2026-11-20：命令改为对接后端 `/bot-v1`（`/状态` → `server-status`，`/启动` → `trigger-one-click-start`），移除 `/登录`、`/释放时间`、`/我的信息`、`/重置对话`；插件由 `mc_client` 改名为 `lab_client`，去掉 SQLite/JWT；`/开机` 更名为 `/启动`
 - 2026-11-20：适配群消息全量模式 `GROUP_MESSAGE_CREATE`；新增群内不 @ 自动聊天、每分钟限流和被动回复额度说明
 - 2026-11-20：后端配置简化为 `BACKEND_BASE_URL` 一项，移除 `BOT_KEY` / `BOT_USERNAME` / `BOT_PASSWORD` 与 SSE 状态推送
 - 2026-11-20：HTTP 接口移除 `HTTP_API_TOKEN`，改为只接受本机回环请求

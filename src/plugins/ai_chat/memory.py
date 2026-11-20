@@ -55,7 +55,3 @@ def add_turn(key: str, user_text: str, assistant_text: str) -> None:
     _trim(key)
     while len(_STORE) > _MAX_USERS:
         _STORE.popitem(last=False)
-
-
-def reset(key: str) -> None:
-    _STORE.pop(key, None)

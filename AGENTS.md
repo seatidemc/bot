@@ -9,7 +9,7 @@ Seatide MC QQ 机器人开发上下文。NoneBot2 + nonebot-adapter-qq（QQ 官�
 cd ~/code/seatide2026/bot
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
-mkdir -p data          # SQLite 目录，aiosqlite 不会自动建
+mkdir -p data          # 群 openid 等运行数据目录
 SEATIDE_ENV=dev python bot.py
 ```
 
@@ -20,26 +20,22 @@ SEATIDE_ENV=dev python bot.py
 ```
 QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客户端模式）
                                     │
-                                    ├─ /登录、/login → POST /user/bot-token → 后端
-                                    ├─ /状态、/status → GET /state/snapshot/*   → 后端
-                                    ├─ /开机、/start → POST /task/trigger      → 后端
-                                    ├─ /释放时间、/idle → GET /monitor/*        → 后端
-                                    └─ /我的信息、/info → GET /user/profile   → 后端
+                                    ├─ /状态、/status → GET  /bot-v1/server-status            → 后端
+                                    └─ /启动、/start → POST /bot-v1/trigger-one-click-start  → 后端
 ```
 
-后端 `go-aliyunmc-v2` 运行在同一台机器的 `127.0.0.1:45678`，bot 只通过 `BACKEND_BASE_URL` 连接，不需要 `X-Bot-Key` 或 bot 专用账号。用户请求携带 `Authorization: Bearer <jwt>`，JWT 由 `/登录` 调用 `/user/bot-token` 获取，有效期 3 个月。
+后端 `go-aliyunmc-v2` 运行在同一台机器的 `127.0.0.1:45678`，bot 只通过 `BACKEND_BASE_URL` 连接。`/bot-v1` 只接受本机回环直连，**不需要 token、签名或用户登录态**，所以 bot 侧没有登录流程，也不存用户凭据。
 
 ## 模块
 
 | 文件 | 职责 |
 |---|---|
-| `bot.py` | NoneBot2 入口，注册 QQ 适配器，用 `load_plugin("src.plugins.mc_client")` 加载插件 |
-| `src/plugins/mc_client/__init__.py` | 命令匹配器 + 启动/关闭生命周期 |
-| `src/plugins/mc_client/config.py` | 从 NoneBot 配置读取环境变量 |
-| `src/plugins/mc_client/api.py` | 对后端 API 的 HTTP 封装。自动拼接 `BACKEND_BASE_URL` + `Bearer`，后端响应格式 `{"data": ...}` / `{"details": "..."}` 均正确处理 |
-| `src/plugins/mc_client/db.py` | aiosqlite 持久化 `user_tokens` 表（`user_openid → jwt_token, username, whitelist_uuid, jwt_exp_ts`） |
-| `src/plugins/ai_chat/` | DeepSeek 多轮对话插件：`config.py` 读配置，`api.py` 调 `/chat/completions`，`memory.py` 进程内保存每用户最近 N 轮上下文，`__init__.py` 注册私聊 / 群 @ 聊天与 `/重置对话` |
-| `src/plugins/http_api/` | 对外 HTTP 接口：`POST /bot/group-message` 向固定群发消息，`GET /bot/health` 探活；token 鉴权，随 NoneBot 的 FastAPI 驱动启动 |
+| `bot.py` | NoneBot2 入口，注册 QQ 适配器，用 `load_plugin("src.plugins.lab_client")` 加载插件 |
+| `src/plugins/lab_client/__init__.py` | 命令匹配器、群 openid 自动发现、状态格式化 |
+| `src/plugins/lab_client/config.py` | 从 NoneBot 配置读取 `BACKEND_BASE_URL`、`GROUP_OPENID` |
+| `src/plugins/lab_client/api.py` | 对后端 `/bot-v1` 的 HTTP 封装（`ping` / `server-status` / `trigger-one-click-start`）。无鉴权，后端响应格式 `{"data": ...}` / `{"details": "..."}` |
+| `src/plugins/ai_chat/` | DeepSeek 多轮对话插件：`config.py` 读配置，`api.py` 调 `/chat/completions`，`memory.py` 进程内保存每用户最近 N 轮上下文，`__init__.py` 注册私聊 / 群 @ 聊天 |
+| `src/plugins/http_api/` | 对外 HTTP 接口：`POST /bot/group-message` 向固定群发消息，`GET /bot/health` 探活；仅回环地址，随 NoneBot 的 FastAPI 驱动启动 |
 | `test_mock_client.py` | [已废弃] 旧版 OneBot v11 模拟客户端，迁移至 adapter-qq 后不再可用 |
 
 ## 配置
@@ -71,13 +67,10 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 
 | 命令 | 别名 | 权限 | 说明 |
 |---|---|---|---|
-| `/登录 用户名 密码` | `login` | 仅私聊 | 调 `/user/bot-token` 获取 JWT，存入 SQLite，3 月有效 |
-| `/状态` | `status`, `zt` | 仅群聊 | 活跃实例信息 + 服务器在线状态 + 玩家数 |
-| `/开机` | `start`, `kj` | 仅群聊 | 触发 `start_server` 任务（要求用户已绑定白名单） |
-| `/释放时间` | `idle`, `sfsj`, `剩余时间` | 仅群聊 | 自动归档倒计时，-1 表示无活动倒计时 |
-| `/我的信息` | `info`, `wdxx`, `profile` | 仅群聊 | 用户名、角色、白名单绑定状态 |
+| `/状态` | `status`, `zt` | 群/私聊 | 调 `GET /bot-v1/server-status`：在线状态、IP、玩家数、运行时长、内存/CPU、预计释放时间 |
+| `/启动` | `start`, `qd` | 群/私聊 | 调 `POST /bot-v1/trigger-one-click-start`；任务已在跑时提示无需重复触发 |
 
-未登录用户在群里发命令时，bot **直接回复**提醒消息到当前群。
+命令不需要登录；后端按来源地址限流，`/启动` 遇到 `409`（其他部署链任务执行中）或 `429` 会直接回复原因。
 
 ## 本地测试
 
@@ -85,7 +78,7 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 
 1. 后端运行中：`cd ~/code/go-aliyunmc-v2 && go run . run`
 2. Bot 运行中：`cd ~/code/seatide2026/bot && source .venv/bin/activate && python bot.py`
-3. 后端有一个可登录的用户（如 `testuser / testpass`）
+3. 后端已启用 `[bot] enabled = true`（`curl http://127.0.0.1:45678/bot-v1/ping` 返回 200）
 
 ```bash
 source .venv/bin/activate && python test_mock_client.py
@@ -94,15 +87,16 @@ source .venv/bin/activate && python test_mock_client.py
 ## 后端接入
 
 - 后端 `go-aliyunmc-v2` 的机器人模块前缀为 `/bot-v1`（由后端 `bot.Bind` 注册），只接受本机回环地址的请求，无需 `X-Bot-Key`。
+- 后端 `/bot-v1` 当前只有 `GET /ping`、`GET /server-status`、`POST /trigger-one-click-start`，接口细节见 `go-aliyunmc-v2/docs/bot-server-api.md`。
 - bot 侧只配置 `BACKEND_BASE_URL` 一项后端参数；如部署时后端挂在路径前缀下，把前缀一并写进该变量即可。
-- 用户相关接口仍需 JWT：私聊 `/登录` 调用后端换取 token，之后各命令以 `Authorization: Bearer <jwt>` 访问。
+- `/bot-v1` 不签发用户登录态，bot 不再保存用户名/密码/JWT，任何人都能触发 `/启动`，仅受后端 `rate_limit_per_minute` 限制。
 
 ## 约定与踩坑
 
-- `load_plugin("src.plugins.mc_client")` 指定模块名加载；`load_plugins("src.plugins")` 目录扫描无法发现子包
+- `load_plugin("src.plugins.lab_client")` 指定模块名加载；`load_plugins("src.plugins")` 目录扫描无法发现子包
 - 必须 `DRIVER=~httpx+~websockets`；缺少 websockets 则无法建立 WS 连接
-- `data/` 目录需手动 `mkdir`，aiosqlite 不会自动创建
-- 后端 Go 的 State 结构体字段大写开头（`Value`、`Error`、`UpdatedAt`），Python 侧取值注意大小写
+- `data/` 目录需手动 `mkdir`，`data/group_openid.txt` 依赖它存在
+- `/bot-v1/server-status` 的字段是 camelCase（`uptimeSeconds`、`usagePercent`、`usedCores`、`release.inSeconds` 等），且 `uptimeSeconds`、`memory`、`cpu`、`players.max` 可能为 `null`，格式化前要判空
 - 后端错误响应字段名是 `details` 不是 `error`
 - QQ 官方 API 用 `openid` 标识用户和群，不是 QQ 号
 - 群主开启「获取群内全部消息」后，事件类型从 `GROUP_AT_MESSAGE_CREATE` 变为 `GROUP_MESSAGE_CREATE`；插件统一用 `GroupMessageCreateEvent` 基类，并用 `event.to_me` / `mentions.is_you` 判断是否被 @
@@ -130,11 +124,10 @@ SEATIDE_ENV=prod python bot.py   # 生产
 ## DeepSeek AI 对话
 
 - 私聊任意非命令文本、或群里 @bot 发任意文本 → 调用 DeepSeek 回复
-- `/重置对话`（别名 `reset`、`清空对话`、`clear`）清空当前用户的上下文
-- 上下文保存在进程内存，`AI_HISTORY_TTL` 秒无活动自动过期，重启丢失
+- 上下文保存在进程内存，无活动超过 `AI_HISTORY_TTL` 秒自动过期，重启丢失（不提供手动清空命令）
 - 同一用户的消息串行处理，全局并发受 `AI_MAX_CONCURRENCY` 限制
 - 开启 `AI_GROUP_CHAT_WITHOUT_AT` 后，未 @ 的群消息也会进入 AI；按群每分钟限流，回复走被动消息 `msg_id`，不使用主动消息额度
-- 未配置 `DEEPSEEK_API_KEY` 时 AI 匹配器不启用，`mc_client` 的兜底提示继续生效
+- 未配置 `DEEPSEEK_API_KEY` 时 AI 匹配器不启用，`lab_client` 的兜底提示继续生效
 - 调用失败（超时 / 401 / 402 / 429）会直接把原因回复给用户
 - 每次成功调用在 `api.py` 里以 INFO 记录 `DeepSeek 用量`（prompt / completion / 思考 token / 缓存命中），用于观察成本
 

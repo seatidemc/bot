@@ -9,7 +9,7 @@ from nonebot import get_bot, get_driver
 from nonebot.log import logger
 from pydantic import BaseModel
 
-from ..mc_client import get_group_openid
+from ..lab_client import get_group_openid
 from . import config
 
 

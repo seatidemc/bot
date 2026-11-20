@@ -6,4 +6,3 @@ Requires-Python: >=3.11
 Requires-Dist: nonebot2[websockets]>=2.4.0
 Requires-Dist: nonebot-adapter-qq>=1.7.0
 Requires-Dist: httpx>=0.28.0
-Requires-Dist: aiosqlite>=0.21.0

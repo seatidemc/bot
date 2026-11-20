@@ -7,7 +7,6 @@ dependencies = [
     "nonebot2[fastapi,websockets]>=2.4.0",
     "nonebot-adapter-qq>=1.7.0",
     "httpx>=0.28.0",
-    "aiosqlite>=0.21.0",
 ]
 
 [tool.nonebot]

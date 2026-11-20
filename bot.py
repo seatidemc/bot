@@ -14,7 +14,7 @@ nonebot.logger.info(f"运行环境: {ENV_NAME} ({_env_file.name})")
 driver = nonebot.get_driver()
 driver.register_adapter(QQAdapter)
 
-nonebot.load_plugin("src.plugins.mc_client")
+nonebot.load_plugin("src.plugins.lab_client")
 nonebot.load_plugin("src.plugins.ai_chat")
 nonebot.load_plugin("src.plugins.http_api")
 

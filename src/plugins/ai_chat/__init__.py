@@ -6,7 +6,7 @@ import asyncio
 import time
 from collections import deque
 
-from nonebot import get_driver, on_command, on_message
+from nonebot import get_driver, on_message
 from nonebot.adapters.qq import (
     Bot,
     C2CMessageCreateEvent,
@@ -16,15 +16,13 @@ from nonebot.log import logger
 from nonebot.permission import Permission
 from nonebot.rule import Rule
 
-from ..mc_client import is_group_addressed
+from ..lab_client import is_group_addressed
 from . import api, config, memory
 
 # ─── 权限：私聊 / 群聊 ────────────────────────────────────────
 
 PRIVATE = Permission(lambda event: isinstance(event, C2CMessageCreateEvent))
-GROUP = Permission(lambda event: is_group_addressed(event))
 GROUP_ANY = Permission(lambda event: isinstance(event, GroupMessageCreateEvent))
-PRIVATE_OR_GROUP = PRIVATE | GROUP
 PRIVATE_OR_ANY_GROUP = PRIVATE | GROUP_ANY
 
 
@@ -83,12 +81,8 @@ async def _allow_auto_chat(group_openid: str) -> bool:
 
 HELP_TEXT = (
     "可用命令：\n"
-    "  /登录 用户名 密码（仅私聊）\n"
-    "  /状态\n"
-    "  /开机\n"
-    "  /释放时间\n"
-    "  /我的信息\n"
-    "  /重置对话\n"
+    "  /状态  查看服务器状态\n"
+    "  /启动  一键启动服务器\n"
     "其他问题直接发文字和我聊就行～"
 )
 
@@ -111,7 +105,7 @@ async def handle_chat(bot: Bot, event):
             await chat.finish("目前只支持文字聊天哦，直接发文字给我就行～")
         return
 
-    # 命令交给 mc_client 处理；群里没 @ 的命令直接忽略，避免误触发和刷屏
+    # 命令交给 lab_client 处理；群里没 @ 的命令直接忽略，避免误触发和刷屏
     if text.startswith(("/", "／")):
         if addressed:
             await chat.finish(HELP_TEXT)
@@ -155,22 +149,6 @@ async def handle_chat(bot: Bot, event):
 
     memory.add_turn(key, text, reply)
     await chat.finish(reply)
-
-
-# ─── 命令：/重置对话 ─────────────────────────────────────────
-
-reset_cmd = on_command(
-    "重置对话",
-    aliases={"reset", "清空对话", "clear"},
-    permission=PRIVATE_OR_GROUP,
-    priority=5,
-)
-
-
-@reset_cmd.handle()
-async def handle_reset(event):
-    memory.reset(_history_key(event))
-    await reset_cmd.finish("🧹 对话上下文已清空，我们重新开始吧")
 
 
 # ─── 启动日志 ────────────────────────────────────────────────

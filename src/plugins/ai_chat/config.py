@@ -91,5 +91,5 @@ AI_GROUP_CHAT_PER_MINUTE: int = int(
     getattr(_cfg, "ai_group_chat_per_minute", 5)
 )
 
-# 没有 API Key 时关闭 AI 对话，退回 mc_client 的命令提示
+# 没有 API Key 时关闭 AI 对话，退回 lab_client 的命令提示
 AI_ENABLED: bool = bool(DEEPSEEK_API_KEY)
