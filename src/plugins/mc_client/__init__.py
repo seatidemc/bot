@@ -1,17 +1,15 @@
-"""QQ 机器人命令和 SSE 状态推送（QQ 官方 API / nonebot-adapter-qq）。"""
+"""QQ 机器人命令（QQ 官方 API / nonebot-adapter-qq）。"""
 
 from __future__ import annotations
 
-import asyncio
 import time
 from pathlib import Path
 
-from nonebot import get_bot, get_driver, on_command, on_message
+from nonebot import get_driver, on_command, on_message
 from nonebot.adapters.qq import (
     Bot,
     C2CMessageCreateEvent,
     GroupMessageCreateEvent,
-    Message,
     MessageSegment,
 )
 from nonebot.log import logger
@@ -22,10 +20,6 @@ from . import config
 from . import db
 
 # ─── 启动初始化 ──────────────────────────────────────────────
-
-_BOT_JWT: str = ""
-_BOT_JWT_EXP: int = 0
-_BOT_LOCK = asyncio.Lock()
 
 # 自动发现的群 openid：首次收到群消息时记录，并持久化到 data/group_openid.txt
 _GROUP_OPENID_FILE = Path("data/group_openid.txt")
@@ -41,25 +35,6 @@ def _load_discovered_group_openid() -> str:
 _discovered_group_openid: str = _load_discovered_group_openid()
 
 
-async def _ensure_bot_jwt() -> str:
-    """获取或刷新 bot 自身的 JWT（用于 SSE 状态监听）。"""
-    global _BOT_JWT, _BOT_JWT_EXP
-
-    now = int(time.time())
-    if _BOT_JWT and now < _BOT_JWT_EXP - 86400:  # 提前 1 天续期
-        return _BOT_JWT
-
-    async with _BOT_LOCK:
-        if _BOT_JWT and now < _BOT_JWT_EXP - 86400:
-            return _BOT_JWT
-
-        resp = await api.get_bot_token(config.BOT_USERNAME, config.BOT_PASSWORD)
-        _BOT_JWT = resp["token"]
-        _BOT_JWT_EXP = now + 7776000  # 3 个月
-        logger.info("Bot 自身 JWT 已刷新")
-        return _BOT_JWT
-
-
 def _get_group_openid() -> str:
     """获取目标群 openid，优先使用配置值，其次自动发现的值。"""
     if config.GROUP_OPENID:
@@ -70,19 +45,6 @@ def _get_group_openid() -> str:
 def get_group_openid() -> str:
     """对外暴露：当前目标群 openid（配置优先，其次自动发现）。"""
     return _get_group_openid()
-
-
-async def _send_group(msg: str) -> None:
-    """向目标群发送消息。"""
-    openid = _get_group_openid()
-    if not openid:
-        logger.warning("无法发送群消息：GROUP_OPENID 未配置且未自动发现，请先在群里 @bot")
-        return
-    try:
-        bot = get_bot()
-        await bot.send_to_group(group_openid=openid, message=msg)
-    except Exception:
-        logger.warning("发送群消息失败，可能是 bot 未连接或群 openid 无效")
 
 
 # ─── 权限：私聊 vs 群聊 ────────────────────────────────────────
@@ -128,7 +90,7 @@ _group_probe = on_message(priority=1, block=False)
 
 @_group_probe.handle()
 async def _probe_group(event: GroupMessageCreateEvent):
-    """收到任意群消息时记录群 openid，供 SSE 推送和 HTTP 接口使用。"""
+    """收到任意群消息时记录群 openid，供 HTTP 接口发消息使用。"""
     global _discovered_group_openid
     logger.debug(
         f"群消息: {type(event).__name__} to_me={getattr(event, 'to_me', False)}"
@@ -143,53 +105,6 @@ async def _probe_group(event: GroupMessageCreateEvent):
     except OSError:
         logger.warning("写入 data/group_openid.txt 失败，仅保存在内存中")
     logger.info(f"已记录群 openid: {openid}（也可填入 GROUP_OPENID 固定使用）")
-
-
-# ─── SSE 状态监听 ─────────────────────────────────────────────
-
-async def _watch_sse(path: str, formatter):
-    """连接 SSE 端点，状态变更时推送到群。"""
-    while True:
-        try:
-            jwt = await _ensure_bot_jwt()
-            logger.info(f"连接 SSE: {path}")
-            async for event in api.sse_watch(path, jwt):
-                msg = formatter(event)
-                if msg:
-                    await _send_group(msg)
-        except asyncio.CancelledError:
-            return
-        except Exception as e:
-            logger.error(f"SSE {path} 异常，5 秒后重连: {e}")
-            await asyncio.sleep(5)
-
-
-def _fmt_server_status(event: dict) -> str | None:
-    """格式化服务器状态变更消息。第一次收到 snapshot 不推送。"""
-    event_type = event.get("event")
-    data = event.get("data", {})
-    if event_type == "server_status_snapshot":
-        return None
-    if event_type == "server_status_update":
-        value = data.get("Value", {})
-        online = value.get("online")
-        players = value.get("playerCount", 0)
-        if online:
-            return f"🟢 服务器已上线！当前 {players} 人在线"
-        else:
-            return "🔴 服务器已离线"
-    return None
-
-
-def _fmt_instance_status(event: dict) -> str | None:
-    """格式化实例状态变更消息。"""
-    event_type = event.get("event")
-    data = event.get("data", {})
-    if event_type == "instance_status_update":
-        value = data.get("Value", "")
-        if value:
-            return f"📦 实例状态: {value}"
-    return None
 
 
 # ─── 命令：/登录 ──────────────────────────────────────────────
@@ -404,24 +319,6 @@ driver = get_driver()
 async def _on_startup():
     await db.init()
     logger.info("数据库初始化完成")
-
-    if not config.BOT_KEY or not config.BOT_USERNAME:
-        logger.warning("BOT_KEY / BOT_USERNAME 未配置，部分功能不可用")
-        return
-
-    try:
-        await _ensure_bot_jwt()
-        logger.info("Bot 自身账号验证成功")
-    except Exception as e:
-        logger.error(f"Bot 自身账号验证失败: {e}")
-        return
-
-    # 启动 SSE 状态监听（后台任务）
-    asyncio.create_task(_watch_sse("/state/watch/server-status", _fmt_server_status))
-    asyncio.create_task(
-        _watch_sse("/state/watch/instance-status", _fmt_instance_status)
-    )
-    logger.info("SSE 状态监听已启动")
 
 
 @driver.on_shutdown

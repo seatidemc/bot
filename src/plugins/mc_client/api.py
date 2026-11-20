@@ -20,17 +20,14 @@ class APIError(Exception):
 
 
 def _headers(jwt: str | None = None) -> dict[str, str]:
-    h = {
-        "X-Bot-Key": config.BOT_KEY,
-        "Content-Type": "application/json",
-    }
+    h = {"Content-Type": "application/json"}
     if jwt:
         h["Authorization"] = f"Bearer {jwt}"
     return h
 
 
 def _base_url(path: str) -> str:
-    return f"{config.BACKEND_URL}{path}"
+    return f"{config.BACKEND_BASE_URL}{path}"
 
 
 async def _request(
@@ -69,7 +66,7 @@ async def _request(
 
 
 async def get_bot_token(username: str, password: str) -> dict:
-    """用用户名密码换取 bot JWT（需 X-Bot-Key，无需 session）。"""
+    """用用户名密码换取 bot JWT（无需 session）。"""
     data = await _request(
         "POST",
         "/user/bot-token",
@@ -130,34 +127,3 @@ async def get_idle_remaining(jwt: str) -> int:
             jwt=jwt,
         )
     ).get("data", -1)
-
-
-async def sse_watch(path: str, jwt: str):
-    """连接 SSE 端点，持续 yield {"event": ..., "data": ...} 字典。"""
-    url = _base_url(path)
-    headers = _headers(jwt)
-    headers["Accept"] = "text/event-stream"
-
-    async with httpx.AsyncClient(timeout=httpx.Timeout(None)) as client:
-        async with client.stream("GET", url, headers=headers) as resp:
-            if resp.status_code != 200:
-                text = await resp.aread()
-                raise APIError(resp.status_code, text.decode()[:200])
-
-            current_event: str | None = None
-            async for line in resp.aiter_lines():
-                line = line.strip()
-                if not line:
-                    current_event = None
-                    continue
-                if line.startswith(":"):
-                    continue
-                if line.startswith("event:"):
-                    current_event = line[6:].strip()
-                elif line.startswith("data:"):
-                    data_str = line[5:].strip()
-                    if data_str:
-                        yield {
-                            "event": current_event,
-                            "data": json.loads(data_str),
-                        }

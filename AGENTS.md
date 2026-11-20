@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Seatide MC QQ 机器人开发上下文。NoneBot2 + nonebot-adapter-qq（QQ 官方 API），群聊 @ 命令 + SSE 状态推送。
+Seatide MC QQ 机器人开发上下文。NoneBot2 + nonebot-adapter-qq（QQ 官方 API），群聊 @ 命令。
 
 ## 运行 / 部署
 
@@ -24,24 +24,19 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
                                     ├─ /状态、/status → GET /state/snapshot/*   → 后端
                                     ├─ /开机、/start → POST /task/trigger      → 后端
                                     ├─ /释放时间、/idle → GET /monitor/*        → 后端
-                                    ├─ /我的信息、/info → GET /user/profile   → 后端
-                                    └─ SSE 监听（bot 自身账号）→ 群推送
+                                    └─ /我的信息、/info → GET /user/profile   → 后端
 ```
 
-后端 `go-aliyunmc-v2` 运行在同一台机器的 `127.0.0.1:45678`。鉴权机制：
-
-- **用户请求**：`X-Bot-Key` 头 + `Authorization: Bearer <jwt>`。JWT 由 `/user/bot-token` 签发，有效期 3 个月。`X-Bot-Key` 隔离网页端与 bot 端，外部拿到 JWT 也过不了中间件。
-- **bot 自身请求**：同上，但使用 bot 的独立后端账号（operator 权限），用于 SSE 状态监听。
-- 后端 `mid/auth.go` 检测到 `X-Bot-Key` 时走 JWT 验证，否则走原有 session cookie。
+后端 `go-aliyunmc-v2` 运行在同一台机器的 `127.0.0.1:45678`，bot 只通过 `BACKEND_BASE_URL` 连接，不需要 `X-Bot-Key` 或 bot 专用账号。用户请求携带 `Authorization: Bearer <jwt>`，JWT 由 `/登录` 调用 `/user/bot-token` 获取，有效期 3 个月。
 
 ## 模块
 
 | 文件 | 职责 |
 |---|---|
 | `bot.py` | NoneBot2 入口，注册 QQ 适配器，用 `load_plugin("src.plugins.mc_client")` 加载插件 |
-| `src/plugins/mc_client/__init__.py` | 命令匹配器 + SSE 后台任务 + 启动/关闭生命周期 |
-| `src/plugins/mc_client/config.py` | 从 NoneBot 配置读取环境变量。`BOT_PASSWORD` 强制 `str()` 转换以防 pydantic 把纯数字当 int |
-| `src/plugins/mc_client/api.py` | 对后端 API 的 HTTP 封装。自动拼接 `X-Bot-Key` + `Bearer`，后端响应格式 `{"data": ...}` / `{"details": "..."}` 均正确处理。`sse_watch()` 按标准 SSE 解析 `event:` / `data:` 行 |
+| `src/plugins/mc_client/__init__.py` | 命令匹配器 + 启动/关闭生命周期 |
+| `src/plugins/mc_client/config.py` | 从 NoneBot 配置读取环境变量 |
+| `src/plugins/mc_client/api.py` | 对后端 API 的 HTTP 封装。自动拼接 `BACKEND_BASE_URL` + `Bearer`，后端响应格式 `{"data": ...}` / `{"details": "..."}` 均正确处理 |
 | `src/plugins/mc_client/db.py` | aiosqlite 持久化 `user_tokens` 表（`user_openid → jwt_token, username, whitelist_uuid, jwt_exp_ts`） |
 | `src/plugins/ai_chat/` | DeepSeek 多轮对话插件：`config.py` 读配置，`api.py` 调 `/chat/completions`，`memory.py` 进程内保存每用户最近 N 轮上下文，`__init__.py` 注册私聊 / 群 @ 聊天与 `/重置对话` |
 | `src/plugins/http_api/` | 对外 HTTP 接口：`POST /bot/group-message` 向固定群发消息，`GET /bot/health` 探活；token 鉴权，随 NoneBot 的 FastAPI 驱动启动 |
@@ -54,10 +49,7 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | 变量 | 说明 |
 |---|---|
 | `DRIVER` | **必填** `~httpx+~websockets`。WS 客户端模式直连 QQ 开放平台 |
-| `BACKEND_URL` | 后端地址。本机用 `http://127.0.0.1:45678` |
-| `BOT_KEY` | 与后端 `configs/main.toml` 的 `bot_key` 一致 |
-| `BOT_USERNAME` | bot 自身的后端账号（operator 权限，手动 `create_user` 创建） |
-| `BOT_PASSWORD` | 纯数字密码须加引号 `"123"`，否则 pydantic 解析为 int 导致后端 JSON 反序列化失败 |
+| `BACKEND_BASE_URL` | 后端地址，唯一需要配置的后端参数。本机用 `http://127.0.0.1:45678` |
 | `GROUP_OPENID` | 目标群 openid。首次收到群消息会自动记录并写入 `data/group_openid.txt`，重启后继续生效；也可手动填入固定使用 |
 | `QQ_BOTS` | JSON 数组，含 bot 的 `id`、`token`、`secret`、`intent` |
 | `DEEPSEEK_API_KEY` | DeepSeek API Key，留空则 AI 对话关闭（私聊自动回复命令帮助） |
@@ -68,7 +60,6 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `AI_GROUP_CHAT_WITHOUT_AT` | 群内不 @ 是否参与聊天，默认 false |
 | `AI_GROUP_CHAT_PER_MINUTE` | 每个群每分钟自动聊天回复上限，默认 5 |
 | `HOST` / `PORT` | HTTP 服务监听地址，默认 `127.0.0.1:8081`，建议只监听本机 |
-| `HTTP_API_TOKEN` | 调用接口所需的 token，请求头 `X-API-Token` 或 `Authorization: Bearer <token>` |
 | `HTTP_API_MAX_CHARS` | 单条消息最大字符数，默认 2000 |
 
 ## 命令
@@ -85,15 +76,6 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 
 未登录用户在群里发命令时，bot **直接回复**提醒消息到当前群。
 
-## SSE 状态推送
-
-bot 启动时用自身账号获取 JWT，后台连接两个 SSE 流：
-
-- `/state/watch/server-status`：服务器上线/离线时群内推送 🟢/🔴
-- `/state/watch/instance-status`：实例状态变更时推送 📦
-
-bot 自身 JWT 过期前 1 天自动续期。SSE 连接断开自动重连（5 秒间隔）。snapshot 事件（首次连接时的当前快照）不推送，仅 update 事件触发消息。
-
 ## 本地测试
 
 `test_mock_client.py` 模拟 NapCat 连接 bot 的 OneBot WS 端点，发送伪造的 QQ 消息。使用前提：
@@ -106,25 +88,17 @@ bot 自身 JWT 过期前 1 天自动续期。SSE 连接断开自动重连（5 �
 source .venv/bin/activate && python test_mock_client.py
 ```
 
-## 后端改动依赖
+## 后端接入
 
-bot 依赖后端以下改动（已在 `~/code/go-aliyunmc-v2` 中实施）：
-
-1. `mid/auth.go` — `X-Bot-Key` + JWT 鉴权通道，`InitBotAuth()` / `IsBotRequest()`
-2. `routes/user_routes/handle_bot_token.go` — `POST /user/bot-token` 端点（无需 session）
-3. `routes/user_routes/config.go` — `BotTokenConfig`（Secret + ExpireSeconds）
-4. `configs/user-routes.toml` — `[bot_token]` 节
-5. `config.go` + `configs/main.toml` — `BotKey` 字段
-6. `main.go` — `mid.InitBotAuth(C.BotKey, user_routes.C.BotToken.Secret)` 调用
-
-部署前确认 `bot_key` 和 `[bot_token].secret` 两端一致。
+- 后端 `go-aliyunmc-v2` 的机器人模块前缀为 `/bot-v1`（由后端 `bot.Bind` 注册），只接受本机回环地址的请求，无需 `X-Bot-Key`。
+- bot 侧只配置 `BACKEND_BASE_URL` 一项后端参数；如部署时后端挂在路径前缀下，把前缀一并写进该变量即可。
+- 用户相关接口仍需 JWT：私聊 `/登录` 调用后端换取 token，之后各命令以 `Authorization: Bearer <jwt>` 访问。
 
 ## 约定与踩坑
 
 - `load_plugin("src.plugins.mc_client")` 指定模块名加载；`load_plugins("src.plugins")` 目录扫描无法发现子包
 - 必须 `DRIVER=~httpx+~websockets`；缺少 websockets 则无法建立 WS 连接
 - `data/` 目录需手动 `mkdir`，aiosqlite 不会自动创建
-- `.env` 中纯数字值（如密码 `123`）会被 pydantic 解析为 int，config.py 强制 `str()` 保底
 - 后端 Go 的 State 结构体字段大写开头（`Value`、`Error`、`UpdatedAt`），Python 侧取值注意大小写
 - 后端错误响应字段名是 `details` 不是 `error`
 - QQ 官方 API 用 `openid` 标识用户和群，不是 QQ 号
@@ -179,12 +153,12 @@ PowerShell 用 `$env:SEATIDE_ENV="prod"`。默认 pip 源缺少 `nonebot-adapter
 
 ## 对外 HTTP 接口
 
-NoneBot 驱动改为 `~fastapi+~httpx+~websockets`，机器人在 QQ WebSocket 之外额外启动一个 HTTP 服务（默认 `127.0.0.1:8081`），供后端或脚本触发群消息。
+NoneBot 驱动改为 `~fastapi+~httpx+~websockets`，机器人在 QQ WebSocket 之外额外启动一个 HTTP 服务（默认 `127.0.0.1:8081`），供后端或脚本触发群消息。接口只接受本机回环地址的请求，无 token 鉴权。
 
 ### 发送群消息
 
 ```bash
-curl -X POST http://127.0.0.1:8081/bot/group-message   -H "Content-Type: application/json"   -H "X-API-Token: ${HTTP_API_TOKEN}"   -d '{"message": "服务器将在 10 分钟后重启"}'
+curl -X POST http://127.0.0.1:8081/bot/group-message   -H "Content-Type: application/json"   -d '{"message": "服务器将在 10 分钟后重启"}'
 ```
 
 成功返回：
@@ -198,9 +172,9 @@ curl -X POST http://127.0.0.1:8081/bot/group-message   -H "Content-Type: applica
 | 状态码 | 含义 |
 |---|---|
 | 400 | message 为空或超过 `HTTP_API_MAX_CHARS` |
-| 401 | token 缺失或错误 |
+| 403 | 非本机请求，或携带了转发头 |
 | 502 | QQ 接口发送失败（权限、频率限制等） |
-| 503 | 接口未配置 token、机器人未连接、群 openid 未知 |
+| 503 | 机器人未连接、群 openid 未知 |
 
 ### 探活
 
@@ -212,5 +186,5 @@ curl http://127.0.0.1:8081/bot/health
 ### 注意
 
 - 目标群固定为 `GROUP_OPENID`，未配置时使用首次收到群消息自动记录的 openid，并持久化到 `data/group_openid.txt`。
-- 服务默认只监听 `127.0.0.1`，不要随意改成 `0.0.0.0`；token 泄露等同于可向群内发消息。
+- 服务默认只监听 `127.0.0.1`，不要随意改成 `0.0.0.0`；接口本身也会拒绝非回环来源和带 `Forwarded` / `X-Forwarded-For` / `X-Real-IP` 的请求。
 - QQ 官方接口对主动消息有频率和权限限制（被动回复 5 分钟内 5 条、主动推送需平台开通能力）。若返回 502，先查开放平台的消息权限与配额。

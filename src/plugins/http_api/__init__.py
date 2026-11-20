@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import secrets
+import ipaddress
 
-from fastapi import Header, HTTPException
+from fastapi import HTTPException, Request
 from nonebot import get_bot, get_driver
 from nonebot.log import logger
 from pydantic import BaseModel
@@ -17,31 +17,27 @@ class SendMessageBody(BaseModel):
     message: str
 
 
-def _resolve_token(x_api_token: str | None, authorization: str | None) -> str | None:
-    if x_api_token:
-        return x_api_token.strip()
-    if authorization and authorization.lower().startswith("bearer "):
-        return authorization[7:].strip()
-    return None
+_FORWARDED_HEADERS = ("Forwarded", "X-Forwarded-For", "X-Real-IP")
 
 
-def _check_token(token: str | None) -> None:
-    expected = config.HTTP_API_TOKEN
-    if not expected:
-        raise HTTPException(
-            status_code=503, detail="接口未启用：HTTP_API_TOKEN 未配置"
-        )
-    if not token or not secrets.compare_digest(token, expected):
-        raise HTTPException(status_code=401, detail="X-API-Token 无效")
+def _require_loopback(request: Request) -> None:
+    """只接受直接来自本机回环地址的请求。"""
+    # 带转发头说明请求经过代理，即使代理在本机也拒绝
+    if any(request.headers.get(name) for name in _FORWARDED_HEADERS):
+        raise HTTPException(status_code=403, detail="仅允许本机访问")
+
+    host = request.client.host if request.client else ""
+    try:
+        is_loopback = ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        is_loopback = False
+    if not is_loopback:
+        raise HTTPException(status_code=403, detail="仅允许本机访问")
 
 
-async def send_group_message(
-    body: SendMessageBody,
-    x_api_token: str | None = Header(default=None, alias="X-API-Token"),
-    authorization: str | None = Header(default=None),
-):
+async def send_group_message(body: SendMessageBody, request: Request):
     """发送文本消息到 GROUP_OPENID 对应的群。"""
-    _check_token(_resolve_token(x_api_token, authorization))
+    _require_loopback(request)
 
     text = body.message.strip()
     if not text:
@@ -78,8 +74,9 @@ async def send_group_message(
     return {"ok": True, "group_openid": group_openid, "message_id": message_id}
 
 
-async def health():
-    """连通性检查，不校验 token，便于探活。"""
+async def health(request: Request):
+    """连通性检查。"""
+    _require_loopback(request)
     try:
         bot = get_bot()
         ready = bool(bot.ready)

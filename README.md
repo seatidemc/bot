@@ -8,7 +8,6 @@ Seatide Minecraft 服务器的 QQ 群机器人，基于 [NoneBot2](https://noneb
 
 - 群内命令：服务器状态、触发开机、查看自动归档倒计时、查看账号信息
 - 私聊 `/登录` 换取后端 JWT，绑定 QQ 与网页账号
-- 服务器上线/离线、实例状态变更自动推送到群（SSE）
 - DeepSeek AI 对话：私聊任意文字，群内 @bot 或开启自动聊天后直接发文字
 - 群内自动聊天支持每分钟限流，回复走被动消息，不占用主动消息额度
 - 支持群消息全量模式（GROUP_MESSAGE_CREATE），只响应 @、回复或自动聊天
@@ -19,12 +18,12 @@ Seatide Minecraft 服务器的 QQ 群机器人，基于 [NoneBot2](https://noneb
 
 ```
 bot.py                          # 入口，选择环境并加载插件
-src/plugins/mc_client/          # QQ 命令、SSE 状态推送、SQLite 持久化
+src/plugins/mc_client/          # QQ 命令、SQLite 持久化
 src/plugins/ai_chat/            # DeepSeek 多轮对话
 src/plugins/http_api/           # 对外 HTTP 接口
 .env.example                    # 配置模板
 .env.dev / .env.prod            # 实际配置（已 gitignore）
-start.sh                        # Linux 下 screen 启动脚本
+start.sh                        # Linux / macOS 一键启动（dev 前台 / prod screen）
 run_dev.bat / run_prod.bat      # Windows 启动脚本
 data/                           # SQLite 与群 openid（已 gitignore）
 AGENTS.md                       # 面向开发者的实现细节
@@ -35,7 +34,7 @@ AGENTS.md                       # 面向开发者的实现细节
 - Python 3.11+
 - QQ 开放平台机器人（AppID + AppSecret）
 - 可选：DeepSeek API Key
-- 后端 `go-aliyunmc-v2` 运行在 `BACKEND_URL`（默认 `http://127.0.0.1:45678`）
+- 后端 `go-aliyunmc-v2` 运行在 `BACKEND_BASE_URL`（默认 `http://127.0.0.1:45678`）
 
 ## 快速开始
 
@@ -70,14 +69,16 @@ mkdir -p data
 SEATIDE_ENV=dev python bot.py
 ```
 
-生产环境可以用 `start.sh`（screen 管理）：
+Linux / macOS 也可以直接用 `start.sh`，它会自动创建虚拟环境、按 `pyproject.toml` 安装依赖：
 
 ```bash
-export SEATIDE_ENV=prod
-./start.sh
+./start.sh                    # 开发：前台运行，日志直接打印，Ctrl+C 停止
+SEATIDE_ENV=prod ./start.sh   # 生产：screen 后台运行
+./start.sh restart            # 重启生产进程
+./start.sh stop               # 停止生产进程
 ```
 
-`start.sh` 默认从 `~/bot` 启动，如部署路径不同请修改脚本里的 `BOT_DIR`。
+脚本始终以自身所在目录（项目根目录）为工作目录，无需修改路径。生产模式的日志同时写入 `data/bot.log`。
 
 ## 配置
 
@@ -134,10 +135,7 @@ QQ_BOTS='[
 | `DRIVER` | `~fastapi+~httpx+~websockets` | 必填，HTTP 服务 + QQ WebSocket |
 | `ENVIRONMENT` | `dev` | 由配置文件设置 |
 | `LOG_LEVEL` | `DEBUG` / `INFO` | 日志级别 |
-| `BACKEND_URL` | `http://127.0.0.1:45678` | 后端地址 |
-| `BOT_KEY` | 无 | 与后端 `bot_key` 一致 |
-| `BOT_USERNAME` | 无 | bot 自身的后端账号 |
-| `BOT_PASSWORD` | 无 | 纯数字密码要加引号 |
+| `BACKEND_BASE_URL` | `http://127.0.0.1:45678` | 后端地址 |
 | `GROUP_OPENID` | 空 | 目标群 openid，留空则自动记录 |
 | `QQ_BOTS` | 无 | 机器人凭据 JSON 数组 |
 | `DEEPSEEK_API_KEY` | 空 | 留空则关闭 AI 对话 |
@@ -148,8 +146,7 @@ QQ_BOTS='[
 | `AI_MAX_REPLY_CHARS` | `1200` | 回复最大字符数，超出截断 |
 | `AI_GROUP_CHAT_WITHOUT_AT` | `false` | 群内不 @ 也参与聊天；回复走被动消息 |
 | `AI_GROUP_CHAT_PER_MINUTE` | `5` | 每个群每分钟自动聊天回复上限，0 关闭 |
-| `HOST` / `PORT` | `127.0.0.1:8081` | HTTP 服务监听地址 |
-| `HTTP_API_TOKEN` | 无 | 调用接口的鉴权 token |
+| `HOST` / `PORT` | `127.0.0.1:8081` | HTTP 服务监听地址，建议只监听本机 |
 | `HTTP_API_MAX_CHARS` | `2000` | 接口单条消息最大字符数 |
 
 群 openid 不需要手动获取：机器人收到第一条群消息后会打印并写入 `data/group_openid.txt`，重启后继续生效。
@@ -198,18 +195,15 @@ AI_GROUP_CHAT_PER_MINUTE=5
 
 ## HTTP 接口
 
-服务默认只监听 `127.0.0.1:8081`，随机器人一起启动。
+服务默认只监听 `127.0.0.1:8081`，随机器人一起启动。接口只接受来自本机回环地址的请求，其他来源一律返回 403。
 
 ### 发送群消息
 
 ```bash
 curl -X POST http://127.0.0.1:8081/bot/group-message \
   -H "Content-Type: application/json" \
-  -H "X-API-Token: <HTTP_API_TOKEN>" \
   -d '{"message": "服务器将在 10 分钟后重启"}'
 ```
-
-也支持 `Authorization: Bearer <HTTP_API_TOKEN>`。
 
 成功响应：
 
@@ -222,9 +216,9 @@ curl -X POST http://127.0.0.1:8081/bot/group-message \
 | 状态码 | 含义 |
 |---|---|
 | 400 | message 为空或超过 `HTTP_API_MAX_CHARS` |
-| 401 | token 缺失或错误 |
+| 403 | 非本机请求，或携带了转发头 |
 | 502 | QQ 接口发送失败（无权限、频控等） |
-| 503 | token 未配置、机器人未连接、群 openid 未知 |
+| 503 | 机器人未连接、群 openid 未知 |
 
 ### 探活
 
@@ -233,23 +227,14 @@ curl http://127.0.0.1:8081/bot/health
 # {"ok": true, "bot_ready": true, "group_configured": true}
 ```
 
-该接口不校验 token，只返回布尔状态。
+同样只允许本机访问。
 
 ### 注意
 
 - 群 openid 未知时先让群里 @bot 发一条消息，或手动填写 `GROUP_OPENID`
 - QQ 对主动消息有频控和权限要求，无权限时接口返回 502
 - 主动消息配额以开放平台后台为准；被动回复为 5 分钟内最多 5 条
-- 如果调用方在其他机器，需要把 `HOST` 改为 `0.0.0.0` 并做好防火墙与 token 管理
-
-## 状态推送
-
-机器人用自身后端账号获取 JWT，后台连接两个 SSE 流：
-
-- `/state/watch/server-status`：服务器上线/离线推送 🟢/🔴
-- `/state/watch/instance-status`：实例状态变更推送 📦
-
-需要目标群 openid 可用（`GROUP_OPENID` 或已自动记录）。连接断开后 5 秒重连，bot 自身 JWT 过期前 1 天自动续期。
+- 接口不提供外网访问；不要改 `HOST` 或在前面加反向代理，`Forwarded` / `X-Forwarded-For` / `X-Real-IP` 请求会被拒绝
 
 ## 数据与持久化
 
@@ -263,14 +248,16 @@ curl http://127.0.0.1:8081/bot/health
 ## 部署
 
 - 开发机可直接双击 `run_dev.bat` / `run_prod.bat`
-- Linux 服务器建议用 `start.sh` 配合 screen：
+- Linux / macOS 用 `start.sh`，生产环境自动跑在 screen 里：
 
 ```bash
-SEATIDE_ENV=prod ./start.sh
+SEATIDE_ENV=prod ./start.sh          # 启动
+SEATIDE_ENV=prod ./start.sh restart  # 重启
+SEATIDE_ENV=prod ./start.sh stop     # 停止
 ```
 
 - 也可以交给 systemd，关键点是工作目录、虚拟环境里的 `python`、以及 `SEATIDE_ENV=prod`
-- 部署前确认 `.env.prod` 中 `BOT_KEY` 与后端 `configs/main.toml` 的 `bot_key` 一致
+- 部署前确认 `.env.prod` 中 `BACKEND_BASE_URL` 指向正确的后端地址
 
 ## 常见问题
 
@@ -305,8 +292,7 @@ pip install -e . -i https://pypi.tuna.tsinghua.edu.cn/simple
 ## 安全
 
 - `.env.dev`、`.env.prod` 含 API Key 与机器人密钥，已被 gitignore，不要提交
-- `HTTP_API_TOKEN` 等同于群消息发送权限，泄露后立即更换
-- HTTP 服务默认只监听本机；暴露到公网前务必配置防火墙
+- HTTP 服务只接受本机请求，不要暴露到公网或加反向代理
 - AppSecret 泄露可在 QQ 开放平台重置
 
 ## 开发
@@ -324,3 +310,5 @@ pip install -e . -i https://pypi.tuna.tsinghua.edu.cn/simple
 ## 更新记录
 
 - 2026-11-20：适配群消息全量模式 `GROUP_MESSAGE_CREATE`；新增群内不 @ 自动聊天、每分钟限流和被动回复额度说明
+- 2026-11-20：后端配置简化为 `BACKEND_BASE_URL` 一项，移除 `BOT_KEY` / `BOT_USERNAME` / `BOT_PASSWORD` 与 SSE 状态推送
+- 2026-11-20：HTTP 接口移除 `HTTP_API_TOKEN`，改为只接受本机回环请求
