@@ -141,6 +141,7 @@ QQ_BOTS='[
 | `DEEPSEEK_API_KEY` | 空 | 留空则关闭 AI 对话 |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | DeepSeek 接口地址 |
 | `DEEPSEEK_MODEL` | `deepseek-chat` | 模型名 |
+| `AI_SYSTEM_PROMPT_FILE` | 空 | 系统提示词 Markdown 文件路径；留空或文件无效时不发送 |
 | `AI_MAX_TURNS` | `10` | 每个用户保留的对话轮数 |
 | `AI_HISTORY_TTL` | `3600` | 上下文空闲过期秒数 |
 | `AI_MAX_REPLY_CHARS` | `1200` | 回复最大字符数，超出截断 |

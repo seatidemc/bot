@@ -132,7 +132,11 @@ async def handle_chat(bot: Bot, event):
     async with _lock_for(key):
         # 同一个人连发多条时排队，避免上下文交错
         history = memory.get_messages(key)
-        messages = [{"role": "system", "content": config.AI_SYSTEM_PROMPT}]
+        messages: list[dict[str, str]] = []
+        if config.AI_SYSTEM_PROMPT:
+            messages.append(
+                {"role": "system", "content": config.AI_SYSTEM_PROMPT}
+            )
         messages.extend(history)
         messages.append({"role": "user", "content": text})
 

@@ -55,6 +55,7 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `DEEPSEEK_API_KEY` | DeepSeek API Key，留空则 AI 对话关闭（私聊自动回复命令帮助） |
 | `DEEPSEEK_BASE_URL` | 默认 `https://api.deepseek.com` |
 | `DEEPSEEK_MODEL` | 默认 `deepseek-chat` |
+| `AI_SYSTEM_PROMPT_FILE` | 系统提示词 Markdown 路径（如 `prompts/system_prompt.md`）；留空或路径无效则不发送系统提示词 |
 | `AI_MAX_TURNS` | 每用户保留的对话轮数，默认 10 |
 | `AI_HISTORY_TTL` | 上下文空闲过期秒数，默认 3600 |
 | `AI_GROUP_CHAT_WITHOUT_AT` | 群内不 @ 是否参与聊天，默认 false |

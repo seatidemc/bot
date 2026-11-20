@@ -1,17 +1,39 @@
 """DeepSeek 对话配置（由 .env.dev / .env.prod 提供）。"""
 
+from pathlib import Path
+
 from nonebot import get_driver
+from nonebot.log import logger
 
 _cfg = get_driver().config
 
-_DEFAULT_SYSTEM_PROMPT = (
-    "你是 Seatide Minecraft 服务器的 QQ 群助手，名字叫海潮。"
-    "请用简洁、友好的中文回答，默认控制在 200 字以内。"
-    "群内可用命令：/登录 用户名 密码（需私聊）、/状态、/开机、/释放时间、"
-    "/我的信息、/重置对话。"
-    "如果被问到与服务器无关的问题也可以正常闲聊，但不要编造服务器状态，"
-    "实时状态请引导用户使用 /状态 命令查询。"
-)
+# 项目根目录（bot.py 所在目录），相对路径的提示词文件以此为准
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _load_system_prompt() -> str:
+    """从 AI_SYSTEM_PROMPT_FILE 指定的 Markdown 文件读取系统提示词。
+
+    未配置或文件不可读/为空时返回空字符串，调用方会忽略系统提示词。
+    """
+    raw = str(getattr(_cfg, "ai_system_prompt_file", "") or "").strip()
+    if not raw:
+        return ""
+
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = _PROJECT_ROOT / path
+
+    try:
+        content = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError) as e:
+        logger.warning(f"AI 系统提示词文件读取失败，已忽略: {path} ({e})")
+        return ""
+
+    if not content:
+        logger.warning(f"AI 系统提示词文件为空，已忽略: {path}")
+    return content
+
 
 DEEPSEEK_API_KEY: str = str(getattr(_cfg, "deepseek_api_key", "") or "")
 DEEPSEEK_BASE_URL: str = str(
@@ -21,9 +43,8 @@ DEEPSEEK_BASE_URL: str = str(
 DEEPSEEK_MODEL: str = str(
     getattr(_cfg, "deepseek_model", "deepseek-chat") or "deepseek-chat"
 )
-AI_SYSTEM_PROMPT: str = str(
-    getattr(_cfg, "ai_system_prompt", "") or _DEFAULT_SYSTEM_PROMPT
-)
+# 系统提示词文件路径，留空、文件不存在或为空时不发送系统提示词
+AI_SYSTEM_PROMPT: str = _load_system_prompt()
 AI_TEMPERATURE: float = float(getattr(_cfg, "ai_temperature", 1.0))
 AI_MAX_TOKENS: int = int(getattr(_cfg, "ai_max_tokens", 800))
 AI_TIMEOUT: float = float(getattr(_cfg, "ai_timeout", 60.0))
