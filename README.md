@@ -33,7 +33,7 @@ AGENTS.md                       # 面向开发者的实现细节
 - Python 3.11+
 - QQ 开放平台机器人（AppID + AppSecret）
 - 可选：DeepSeek API Key
-- 后端 `go-aliyunmc-v2` 运行在 `BACKEND_BASE_URL`（默认 `http://127.0.0.1:45678`）
+- 后端 `go-aliyunmc-v2` 运行在 `BACKEND_BASE_URL`（默认 `http://127.0.0.1:45678/bot-v1`，需包含 `/bot-v1` 前缀）
 
 ## 快速开始
 
@@ -134,7 +134,7 @@ QQ_BOTS='[
 | `DRIVER` | `~fastapi+~httpx+~websockets` | 必填，HTTP 服务 + QQ WebSocket |
 | `ENVIRONMENT` | `dev` | 由配置文件设置 |
 | `LOG_LEVEL` | `DEBUG` / `INFO` | 日志级别 |
-| `BACKEND_BASE_URL` | `http://127.0.0.1:45678` | 后端地址 |
+| `BACKEND_BASE_URL` | `http://127.0.0.1:45678/bot-v1` | 后端完整前缀，需包含 `/bot-v1`；bot 不会自动追加路径段 |
 | `GROUP_OPENID` | 空 | 目标群 openid，留空则自动记录 |
 | `QQ_BOTS` | 无 | 机器人凭据 JSON 数组 |
 | `DEEPSEEK_API_KEY` | 空 | 留空则关闭 AI 对话 |

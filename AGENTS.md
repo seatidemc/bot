@@ -33,7 +33,7 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `bot.py` | NoneBot2 入口，注册 QQ 适配器，用 `load_plugin("src.plugins.lab_client")` 加载插件 |
 | `src/plugins/lab_client/__init__.py` | 命令匹配器、群 openid 自动发现、状态格式化 |
 | `src/plugins/lab_client/config.py` | 从 NoneBot 配置读取 `BACKEND_BASE_URL`、`GROUP_OPENID` |
-| `src/plugins/lab_client/api.py` | 对后端 `/bot-v1` 的 HTTP 封装（`ping` / `server-status` / `trigger-one-click-start`）。无鉴权，后端响应格式 `{"data": ...}` / `{"details": "..."}` |
+| `src/plugins/lab_client/api.py` | 对后端机器人接口的 HTTP 封装（`ping` / `server-status` / `trigger-one-click-start`），路径直接拼在 `BACKEND_BASE_URL` 后。无鉴权，后端响应格式 `{"data": ...}` / `{"details": "..."}` |
 | `src/plugins/ai_chat/` | DeepSeek 多轮对话插件：`config.py` 读配置，`api.py` 调 `/chat/completions`，`memory.py` 进程内保存每用户最近 N 轮上下文，`__init__.py` 注册私聊 / 群 @ 聊天 |
 | `src/plugins/http_api/` | 对外 HTTP 接口：`POST /bot/group-message` 向固定群发消息，`GET /bot/health` 探活；仅回环地址，随 NoneBot 的 FastAPI 驱动启动 |
 | `test_mock_client.py` | [已废弃] 旧版 OneBot v11 模拟客户端，迁移至 adapter-qq 后不再可用 |
@@ -45,7 +45,7 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | 变量 | 说明 |
 |---|---|
 | `DRIVER` | **必填** `~httpx+~websockets`。WS 客户端模式直连 QQ 开放平台 |
-| `BACKEND_BASE_URL` | 后端地址，唯一需要配置的后端参数。本机用 `http://127.0.0.1:45678` |
+| `BACKEND_BASE_URL` | 后端完整前缀，唯一需要配置的后端参数。本机用 `http://127.0.0.1:45678/bot-v1`；API 路径直接拼在它后面，代码不自动追加 `/bot-v1` |
 | `GROUP_OPENID` | 目标群 openid。首次收到群消息会自动记录并写入 `data/group_openid.txt`，重启后继续生效；也可手动填入固定使用 |
 | `QQ_BOTS` | JSON 数组，含 bot 的 `id`、`token`、`secret`、`intent` |
 | `DEEPSEEK_API_KEY` | DeepSeek API Key，留空则 AI 对话关闭（私聊自动回复命令帮助） |
@@ -88,7 +88,7 @@ source .venv/bin/activate && python test_mock_client.py
 
 - 后端 `go-aliyunmc-v2` 的机器人模块前缀为 `/bot-v1`（由后端 `bot.Bind` 注册），只接受本机回环地址的请求，无需 `X-Bot-Key`。
 - 后端 `/bot-v1` 当前只有 `GET /ping`、`GET /server-status`、`POST /trigger-one-click-start`，接口细节见 `go-aliyunmc-v2/docs/bot-server-api.md`。
-- bot 侧只配置 `BACKEND_BASE_URL` 一项后端参数；如部署时后端挂在路径前缀下，把前缀一并写进该变量即可。
+- `BACKEND_BASE_URL` 是完整前缀（默认 `http://127.0.0.1:45678/bot-v1`），`api.py` 只拼接 `/ping`、`/server-status`、`/trigger-one-click-start` 这类接口路径，**不会**自动追加 `/bot-v1`。
 - `/bot-v1` 不签发用户登录态，bot 不再保存用户名/密码/JWT，任何人都能触发 `/启动`，仅受后端 `rate_limit_per_minute` 限制。
 
 ## 约定与踩坑

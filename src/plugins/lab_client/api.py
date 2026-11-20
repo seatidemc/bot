@@ -1,4 +1,7 @@
-"""封装对 go-aliyunmc-v2 的 /bot-v1 服务器接口的 HTTP 调用。
+"""封装对 go-aliyunmc-v2 机器人接口的 HTTP 调用。
+
+`BACKEND_BASE_URL` 是完整前缀（默认含 `/bot-v1`），API 路径直接拼在它后面，
+代码不再自动追加任何路径段。
 
 后端只接受来自本机回环地址的直连请求，不需要 token / 签名，
 响应统一为 `{"data": ...}` / `{"details": "..."}`。
@@ -11,9 +14,6 @@ from typing import Any
 import httpx
 
 from . import config
-
-# /bot-v1 下的路由前缀；BACKEND_BASE_URL 可包含部署路径前缀
-BOT_PREFIX = "/bot-v1"
 
 _STATUS_HINTS = {
     403: "后端拒绝访问：请确认 bot 与后端在同一台机器，并通过 127.0.0.1 直连（不能经过反向代理）",
@@ -32,7 +32,7 @@ class APIError(Exception):
 
 
 def _url(path: str) -> str:
-    return f"{config.BACKEND_BASE_URL}{BOT_PREFIX}{path}"
+    return f"{config.BACKEND_BASE_URL}{path}"
 
 
 async def _request(method: str, path: str) -> dict[str, Any]:
