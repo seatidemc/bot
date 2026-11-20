@@ -142,6 +142,9 @@ QQ_BOTS='[
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | DeepSeek 接口地址 |
 | `DEEPSEEK_MODEL` | `deepseek-chat` | 模型名 |
 | `AI_SYSTEM_PROMPT_FILE` | 空 | 系统提示词 Markdown 文件路径；留空或文件无效时不发送 |
+| `AI_TEMPERATURE` | `1.0` | 采样温度 |
+| `AI_MAX_TOKENS` | `800` | 单次回复最大输出 token 数（含思考内容） |
+| `AI_THINKING_EFFORT` | `low` | 思考强度：`none` 关闭思考，`low` / `high` / `max` 开启思考 |
 | `AI_MAX_TURNS` | `10` | 每个用户保留的对话轮数 |
 | `AI_HISTORY_TTL` | `3600` | 上下文空闲过期秒数 |
 | `AI_MAX_REPLY_CHARS` | `1200` | 回复最大字符数，超出截断 |
@@ -174,6 +177,7 @@ QQ_BOTS='[
 - `/重置对话` 可手动清空
 - 未配置 `DEEPSEEK_API_KEY` 时 AI 功能关闭，私聊会收到命令帮助
 - 同一个用户的消息串行处理，全局并发受 `AI_MAX_CONCURRENCY` 限制
+- 每次成功调用都会以 INFO 级别记录一行 `DeepSeek 用量`：prompt / completion / 思考 token / 缓存命中情况，便于观察成本构成
 
 ### 自动聊天（不 @）
 

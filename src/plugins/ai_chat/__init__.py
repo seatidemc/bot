@@ -178,7 +178,11 @@ async def handle_reset(event):
 @get_driver().on_startup
 async def _on_startup():
     if config.AI_ENABLED:
-        logger.info(f"DeepSeek 对话已启用（模型 {config.DEEPSEEK_MODEL}）")
+        logger.info(
+            f"DeepSeek 对话已启用（模型 {config.DEEPSEEK_MODEL}，"
+            f"思考强度 {config.AI_THINKING_EFFORT}，"
+            f"max_tokens {config.AI_MAX_TOKENS}）"
+        )
         if config.AI_GROUP_CHAT_WITHOUT_AT:
             logger.info(
                 f"群内自动聊天已开启，每分钟最多 {config.AI_GROUP_CHAT_PER_MINUTE} 条"

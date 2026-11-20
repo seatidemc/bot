@@ -56,6 +56,8 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `DEEPSEEK_BASE_URL` | 默认 `https://api.deepseek.com` |
 | `DEEPSEEK_MODEL` | 默认 `deepseek-chat` |
 | `AI_SYSTEM_PROMPT_FILE` | 系统提示词 Markdown 路径（如 `prompts/system_prompt.md`）；留空或路径无效则不发送系统提示词 |
+| `AI_MAX_TOKENS` | 单次回复最大输出 token 数（含思考内容），默认 800 |
+| `AI_THINKING_EFFORT` | 思考强度，默认 `low`；`none` 关闭思考，`low` / `high` / `max` 开启思考 |
 | `AI_MAX_TURNS` | 每用户保留的对话轮数，默认 10 |
 | `AI_HISTORY_TTL` | 上下文空闲过期秒数，默认 3600 |
 | `AI_GROUP_CHAT_WITHOUT_AT` | 群内不 @ 是否参与聊天，默认 false |
@@ -134,6 +136,7 @@ SEATIDE_ENV=prod python bot.py   # 生产
 - 开启 `AI_GROUP_CHAT_WITHOUT_AT` 后，未 @ 的群消息也会进入 AI；按群每分钟限流，回复走被动消息 `msg_id`，不使用主动消息额度
 - 未配置 `DEEPSEEK_API_KEY` 时 AI 匹配器不启用，`mc_client` 的兜底提示继续生效
 - 调用失败（超时 / 401 / 402 / 429）会直接把原因回复给用户
+- 每次成功调用在 `api.py` 里以 INFO 记录 `DeepSeek 用量`（prompt / completion / 思考 token / 缓存命中），用于观察成本
 
 ## Windows 本地运行
 

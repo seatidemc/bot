@@ -46,7 +46,27 @@ DEEPSEEK_MODEL: str = str(
 # 系统提示词文件路径，留空、文件不存在或为空时不发送系统提示词
 AI_SYSTEM_PROMPT: str = _load_system_prompt()
 AI_TEMPERATURE: float = float(getattr(_cfg, "ai_temperature", 1.0))
-AI_MAX_TOKENS: int = int(getattr(_cfg, "ai_max_tokens", 800))
+# 单次回复的最大输出 token 数（含思考内容）
+AI_MAX_TOKENS: int = max(1, int(getattr(_cfg, "ai_max_tokens", 800)))
+
+# 思考强度：none 关闭思考，low / high / max 开启思考（DeepSeek reasoning_effort）
+# 兼容别名：minimal → low，medium / xhigh → high
+_THINKING_EFFORT_ALIASES = {"minimal": "low", "medium": "high", "xhigh": "high"}
+_THINKING_EFFORTS = {"none", "low", "high", "max"}
+
+
+def _load_thinking_effort() -> str:
+    raw = str(getattr(_cfg, "ai_thinking_effort", "low") or "").strip().lower()
+    raw = _THINKING_EFFORT_ALIASES.get(raw, raw)
+    if raw not in _THINKING_EFFORTS:
+        logger.warning(
+            f"AI_THINKING_EFFORT 取值无效: {raw!r}，回退为 low（可选 none/low/high/max）"
+        )
+        return "low"
+    return raw
+
+
+AI_THINKING_EFFORT: str = _load_thinking_effort()
 AI_TIMEOUT: float = float(getattr(_cfg, "ai_timeout", 60.0))
 AI_MAX_TURNS: int = int(getattr(_cfg, "ai_max_turns", 10))
 AI_HISTORY_TTL: int = int(getattr(_cfg, "ai_history_ttl", 3600))

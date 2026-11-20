@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import httpx
+from nonebot.log import logger
 
 from . import config
 
@@ -32,6 +33,7 @@ async def chat(messages: list[dict[str, str]]) -> str:
         "stream": False,
         "temperature": config.AI_TEMPERATURE,
         "max_tokens": config.AI_MAX_TOKENS,
+        "reasoning_effort": config.AI_THINKING_EFFORT,
     }
 
     try:
@@ -67,4 +69,29 @@ async def chat(messages: list[dict[str, str]]) -> str:
     except (KeyError, IndexError, TypeError, ValueError) as e:
         raise DeepSeekError(f"响应解析失败：{resp.text[:200]}") from e
 
+    _log_usage(data.get("usage"))
     return content.strip()
+
+
+def _log_usage(usage: dict | None) -> None:
+    """记录本次调用的 token 用量，便于观察成本构成。"""
+    if not isinstance(usage, dict):
+        return
+
+    details = usage.get("completion_tokens_details") or {}
+    prompt = usage.get("prompt_tokens")
+    hit = usage.get("prompt_cache_hit_tokens")
+    miss = usage.get("prompt_cache_miss_tokens")
+    completion = usage.get("completion_tokens")
+    reasoning = details.get("reasoning_tokens")
+    total = usage.get("total_tokens")
+
+    if hit is None and miss is None:
+        cache = "缓存信息缺失"
+    else:
+        cache = f"缓存命中 {hit or 0} / 未命中 {miss or 0}"
+
+    logger.info(
+        f"DeepSeek 用量：prompt {prompt}（{cache}），"
+        f"completion {completion}（思考 {reasoning or 0}），total {total}"
+    )
