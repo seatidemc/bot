@@ -64,6 +64,7 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `AI_DEFAULT_TIMEOUT` | 各 agent 未单独配置超时时的默认值，默认 `60` 秒 |
 | `AI_ROUTER_*` | router 模型配置：`AI_ROUTER_API_KEY` 可回退 `AI_DEFAULT_API_KEY`；`BASE_URL`、`MODEL`、`TEMPERATURE`、`THINKING_EFFORT`、`MAX_TOKENS`、`TIMEOUT`、`SYSTEM_PROMPT_FILE`、`HISTORY_TURNS` 可分别配置 |
 | `AI_CHAT_*` | 普通聊天 agent 配置，`AI_CHAT_API_KEY` 可回退 `AI_DEFAULT_API_KEY`；其余字段同上 |
+| `AI_INVALID_SYSTEM_PROMPT_FILE` | invalid agent 的提示词文件，默认 `prompts/invalid_prompt.md`；模型、端点、采样参数全部复用 chat 配置 |
 | `AI_KNOWLEDGE_*` | 知识库 agent：`AI_KNOWLEDGE_API_KEY` 可回退 `AI_DEFAULT_API_KEY`；其余模型字段同上，另有 `LLMS_TXT_URL`、`TOP_K`、`FETCH_TIMEOUT`、`CACHE_TTL`、`FETCH_URL_REGEX` |
 | `AI_CHAT_LOG_RECENT` | 群聊上下文预置的最近聊天记录条数，默认 20，最大 200 |
 | `AI_ROUTER_HISTORY_TURNS` | router 参考最近多少轮对话，默认 3 |
@@ -149,17 +150,19 @@ SEATIDE_ENV=prod python bot.py   # 生产
                    │
                    ├─ chat      → chat agent      → 最终回复
                    ├─ knowledge → knowledge agent → 最终回复
-                   └─ invalid   → 无 agent        → 固定回复（消息无意义）
+                   └─ invalid   → invalid agent   → 创意回应（没看懂）
 ```
 
 - **指令优先**：斜杠消息不会进入 AI；未知指令由 `lab_client` 回复「指令不存在」。
-- **启动校验**：`AI_ENABLED=true` 时在启动阶段检查三个模型生效后的 API Key、BASE_URL、MODEL、系统提示词、temperature / timeout，以及 `AI_KNOWLEDGE_LLMS_TXT_URL` 是否存在且为 http(s) URL；启动时还会实际拉取一次 llms.txt，确认可访问且能解析出条目。任何一项不通过都会抛出 `RuntimeError`，直接阻止启动，不把配置错误留到运行时。
-- **router**：读取系统提示词和最近 `AI_ROUTER_HISTORY_TURNS` 轮对话，输出 `{"intent":"chat"|"knowledge"|"invalid"}`。只接受合法 JSON 对象，`intent` 必须严格是 `chat`、`knowledge` 或 `invalid`（无别名、无兜底解析）；调用失败或输出不合规时直接报错，不切换到其他 agent。`invalid` 表示消息没有意义，不进入任何 agent，直接回复「似乎这并不是个问题哦，有问题的时候再来找我吧」。deepseek 系列在 `reasoning_effort=none` + JSON 模式下偶发只返回空白内容（`finish_reason=stop`，与 temperature、max_tokens 无关）；因此 `THINKING_EFFORT=none` 时 `api.py` 不下发 `reasoning_effort` 字段，改为使用服务端默认。
+- **启动校验**：`AI_ENABLED=true` 时在启动阶段检查 router / chat / knowledge / invalid 各 agent 生效后的 API Key、BASE_URL、MODEL、系统提示词、temperature / timeout，以及 `AI_KNOWLEDGE_LLMS_TXT_URL` 是否存在且为 http(s) URL；启动时还会实际拉取一次 llms.txt，确认可访问且能解析出条目。任何一项不通过都会抛出 `RuntimeError`，直接阻止启动，不把配置错误留到运行时。
+- **router**：读取系统提示词和最近 `AI_ROUTER_HISTORY_TURNS` 轮对话，输出 `{"intent":"chat"|"knowledge"|"invalid"}`。只接受合法 JSON 对象，`intent` 必须严格是 `chat`、`knowledge` 或 `invalid`（无别名、无兜底解析）；调用失败或输出不合规时直接报错，不切换到其他 agent。`invalid` 表示消息没有意义，交给无工具的 invalid agent 生成一句自然的「没看懂」回应。deepseek 系列在 `reasoning_effort=none` + JSON 模式下偶发只返回空白内容（`finish_reason=stop`，与 temperature、max_tokens 无关）；因此 `THINKING_EFFORT=none` 时 `api.py` 不下发 `reasoning_effort` 字段，改为使用服务端默认。
 - **chat agent**：系统提示词默认 `prompts/chat_prompt.md`，工具为 `search_chat_log`、`get_server_status`、`get_current_time`。
 - **knowledge agent**：系统提示词默认 `prompts/knowledge_prompt.md`，工具为 `search_knowledge`、`fetch_url`、`get_server_status`。`search_knowledge` 拉取 `AI_KNOWLEDGE_LLMS_TXT_URL` 指向的 llms.txt 并检索条目；`fetch_url` 只允许抓取索引中出现过的 URL，返回 Markdown / 文本 / HTML 提取后的正文。
+- **invalid agent**：系统提示词默认 `prompts/invalid_prompt.md`，不挂任何工具；复用 chat 的 API Key、端点、模型 id 和采样参数，只单独加载提示词。用于对乱码、纯灌水等无意义消息生成一句不重复的随意回应；不要求认真追问，用户不认真时也可以跟着玩、敷衍或扯开话题，沿用共享的猫娘语气和输出格式。
+- **提示词共享**：提示词文件支持 `{{include: 相对路径}}` 指令，路径相对于声明它的提示词文件所在目录，可嵌套（最多 8 层，禁止循环）；读取或展开失败会让启动校验报错。`prompts/shared/` 存放 chat / knowledge / invalid 共用的服务器介绍、猫娘语气、回复长度、输出格式和注意事项片段，修改共享片段会同时影响使用它的 agent。
 - **agent loop**：工具结果原样写回模型，不截断；工具调用轮数不设上限，由模型自行决定何时给出最终回复。
-- **模型配置**：router / chat / knowledge 三套配置互相独立；每个 API Key 未单独配置时回退到 `AI_DEFAULT_API_KEY`。端点、模型 id、temperature、thinking effort、max tokens、超时和系统提示词可分别设置，未配置时回退到 `AI_DEFAULT_*` 默认值。
-- **上下文**：只按群隔离，不按人隔离。所有群消息（含指令、未 @ 闲聊）落地到 `data/chat_log.db`；每次请求从该表预置最近 `AI_CHAT_LOG_RECENT` 条作为共享上下文。router 和两个 agent 共享同一份上下文，chat agent 可用 `search_chat_log` 按关键词、最近天数检索更早的记录。
+- **模型配置**：router / chat / knowledge 三套配置互相独立；每个 API Key 未单独配置时回退到 `AI_DEFAULT_API_KEY`。端点、模型 id、temperature、thinking effort、max tokens、超时和系统提示词可分别设置，未配置时回退到 `AI_DEFAULT_*` 默认值。invalid agent 不单独配置模型，直接复用 chat 的端点和采样参数，仅 `AI_INVALID_SYSTEM_PROMPT_FILE` 可单独覆盖提示词。
+- **上下文**：只按群隔离，不按人隔离。所有群消息（含指令、未 @ 闲聊）落地到 `data/chat_log.db`；每次请求从该表预置最近 `AI_CHAT_LOG_RECENT` 条作为共享上下文。router 和三个 agent 共享同一份上下文，chat agent 可用 `search_chat_log` 按关键词、最近天数检索更早的记录。
 - **并发与限流**：全局互斥，同一时间只跑一条 AI 链路；处理中收到的 @ 消息立即回复「上一条消息正在处理中，请稍后再问」，未 @ 的自动聊天消息直接跳过。开启 `AI_GROUP_CHAT_WITHOUT_AT` 后，未 @ 的群消息另按群每分钟限流，回复走被动消息。
 - **私聊**：暂不支持。私聊事件会被直接忽略，指令和 AI 都只处理群聊。
 - **日志**：每次路由以 INFO 记录 `AI 路由：chat/knowledge`；每次模型调用记录 `LLM 用量[component/model]`（prompt / completion / 思考 token / 缓存命中）。

@@ -203,7 +203,8 @@ async def _on_startup():
         "AI 工作流已启用："
         f"router={config.ROUTER.model} "
         f"chat={config.CHAT.model} "
-        f"knowledge={config.KNOWLEDGE.model}"
+        f"knowledge={config.KNOWLEDGE.model} "
+        f"invalid={config.INVALID.model}"
     )
     logger.info(
         f"群聊记录：{chat_log.db_path()}，"

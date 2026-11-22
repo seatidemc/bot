@@ -8,8 +8,8 @@ Seatide Minecraft 服务器的 QQ 群机器人，基于 [NoneBot2](https://noneb
 
 - 群内命令：服务器状态（在线、人数、资源占用、预计释放时间）、一键启动服务器
 - 斜杠消息统一按指令处理；未知指令会明确回复「指令不存在」
-- AI 工作流：router 自动区分普通聊天与知识库问答，分别交给独立 agent 处理
-- 三个模型（router / chat / knowledge）可分别配置端点、模型 id、温度、思考强度和提示词
+- AI 工作流：router 自动区分普通聊天、知识库问答与无意义消息，分别交给独立 agent 处理
+- 三个模型（router / chat / knowledge）可分别配置端点、模型 id、温度、思考强度和提示词；invalid agent 复用 chat 的模型与采样参数，只单独配置提示词
 - agent 支持工具调用：实时服务器状态、当前时间、llms.txt 知识库检索与页面抓取
 - 群内自动聊天支持每分钟限流，回复走被动消息，不占用主动消息额度
 - 支持群消息全量模式（GROUP_MESSAGE_CREATE），只响应 @、回复或自动聊天
@@ -23,7 +23,7 @@ bot.py                          # 入口，选择环境并加载插件
 src/plugins/lab_client/         # QQ 命令（对接后端 /bot-v1）+ 未知指令兜底
 src/plugins/ai/                # AI 工作流：router、chat/knowledge agent、工具
 src/plugins/http_api/           # 对外 HTTP 接口
-prompts/                        # router / chat / knowledge 系统提示词
+prompts/                        # router / chat / knowledge 系统提示词与 shared 共享片段
 .env.example                    # 配置模板
 .env.dev / .env.prod            # 实际配置（已 gitignore）
 start.sh                        # Linux / macOS 一键启动（dev 前台 / prod screen）
@@ -153,6 +153,7 @@ QQ_BOTS='[
 | `AI_CHAT_*` | 见 `.env.example` | chat agent 模型配置，字段同上；`API_KEY` 可回退 `AI_DEFAULT_API_KEY` |
 | `AI_KNOWLEDGE_*` | 见 `.env.example` | knowledge agent 模型配置，`API_KEY` 可回退 `AI_DEFAULT_API_KEY`；另有 `LLMS_TXT_URL` / `TOP_K` / `FETCH_TIMEOUT` / `CACHE_TTL` |
 | `AI_CHAT_SYSTEM_PROMPT_FILE` | `prompts/chat_prompt.md` | chat agent 系统提示词 |
+| `AI_INVALID_SYSTEM_PROMPT_FILE` | `prompts/invalid_prompt.md` | invalid agent 系统提示词；模型与采样参数复用 chat |
 | `AI_KNOWLEDGE_SYSTEM_PROMPT_FILE` | `prompts/knowledge_prompt.md` | knowledge agent 系统提示词 |
 | `AI_ROUTER_SYSTEM_PROMPT_FILE` | `prompts/router_prompt.md` | router 系统提示词 |
 | `AI_KNOWLEDGE_LLMS_TXT_URL` | 空 | 知识库 llms.txt 索引 URL，必须是 http/https；AI 开启时必填 |
@@ -187,7 +188,7 @@ QQ_BOTS='[
 1. 以 `/` 或 `／` 开头 → 指令；已知指令执行对应命令，未知指令回复「指令不存在」。
 2. 非指令消息 → 进入 AI。AI 关闭（`AI_ENABLED=false`）时回复「暂未启动AI」。
 3. AI 开启 → router 模型判断是普通聊天、知识库问答，还是无效消息。
-4. 普通聊天交给 chat agent，知识库问答交给 knowledge agent；各自有独立的系统提示词、模型配置和工具集。无效消息（乱码、无意义内容等）不进入任何 agent，直接回复「似乎这并不是个问题哦，有问题的时候再来找我吧」。
+4. 普通聊天交给 chat agent，知识库问答交给 knowledge agent；各自有独立的系统提示词、模型配置和工具集。无效消息（乱码、无意义内容等）交给无工具的 invalid agent，用同样的猫娘语气随口接一句；用户不认真时 AI 也不必认真追问，可以跟着玩、敷衍或扯开话题，不再返回固定文案。
 5. agent 可调用工具（群聊记录检索、实时服务器状态、当前时间、知识库检索），由模型自行决定何时结束工具调用并给出最终回复。
 
 补充说明：
@@ -195,10 +196,11 @@ QQ_BOTS='[
 - 只支持群聊：@bot 后发文字；开启自动聊天后，未 @ 的普通文字也会进入 AI。私聊消息直接忽略。
 - 群聊记录永久保存在 `data/chat_log.db`（含指令和未 @ 的闲聊），上下文按群共享、不按人隔离；每次请求预置最近 `AI_CHAT_LOG_RECENT` 条，更早的内容由 chat agent 调用 `search_chat_log` 按关键词和最近天数检索。
 - 全局互斥：同一时间只跑一条 AI 链路。处理中收到的 @ 消息会立即回复「上一条消息正在处理中，请稍后再问」，未 @ 的自动聊天消息直接跳过。
-- 启动校验：`AI_ENABLED=true` 时会检查三个模型生效后的 API Key、BASE_URL、MODEL、系统提示词、temperature / timeout，以及 `AI_KNOWLEDGE_LLMS_TXT_URL`；启动时还会实际拉取一次 llms.txt，确认可访问且能解析出条目。任何一项失败都会直接阻止启动，不会留到运行时降级。
+- 启动校验：`AI_ENABLED=true` 时会检查各 agent 生效后的 API Key、BASE_URL、MODEL、系统提示词、temperature / timeout，以及 `AI_KNOWLEDGE_LLMS_TXT_URL`；启动时还会实际拉取一次 llms.txt，确认可访问且能解析出条目。任何一项失败都会直接阻止启动，不会留到运行时降级。
 - router 调用失败或输出无法解析时，直接回复 AI 不可用错误，不切换到其他 agent。注意 DeepSeek 在 `reasoning_effort=none` + JSON 模式下会偶发只返回空白内容，因此 `THINKING_EFFORT=none` 时代码不发送该字段（与 temperature、max_tokens 无关）。
 - 每次路由以 INFO 记录 `AI 路由：chat/knowledge/invalid`；每次模型调用记录 `LLM 用量[component/model]`：prompt / completion / 思考 token / 缓存命中情况，便于观察成本构成。
-- 三个模型的 API Key 可以分别配置；未配置时回退到 `AI_DEFAULT_API_KEY`（三个 agent 共用同一 Key 时只需填这一项）。端点、模型 id、temperature、thinking effort、max tokens、超时和提示词也可以分别配置，未配置时回退到 `AI_DEFAULT_*` 默认值。
+- 三个模型的 API Key 可以分别配置；未配置时回退到 `AI_DEFAULT_API_KEY`（共用同一 Key 时只需填这一项）。invalid 复用 chat 的 API Key、端点和模型，只额外支持 `AI_INVALID_SYSTEM_PROMPT_FILE`。端点、模型 id、temperature、thinking effort、max tokens、超时和提示词也可以分别配置，未配置时回退到 `AI_DEFAULT_*` 默认值。
+- 提示词支持 `{{include: 相对路径}}` 共享片段，路径相对于当前提示词文件所在目录，可嵌套（最多 8 层，禁止循环）；`prompts/shared/` 里是 chat / knowledge / invalid 共用的服务器介绍、猫娘语气、回复长度、输出格式和注意事项。
 
 三个模型可以指向不同端点或不同模型，例如：
 

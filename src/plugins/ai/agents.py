@@ -1,7 +1,8 @@
-"""router 与两个 agent：普通聊天 / 知识库问答。
+"""router 与三个 agent：普通聊天 / 知识库问答 / 无意义消息回应。
 
 每个 agent 拥有独立的模型配置、系统提示词和工具集；这里实现一个
-简单的 OpenAI 兼容工具调用循环（agent loop）。
+简单的 OpenAI 兼容工具调用循环（agent loop）。invalid agent 不使用工具，
+只负责对 router 判为无意义的消息生成一句自然回应。
 """
 
 from __future__ import annotations
@@ -35,7 +36,11 @@ CHAT_AGENT = Agent(name="chat", model=config.CHAT, tools=CHAT_TOOLS)
 KNOWLEDGE_AGENT = Agent(
     name="knowledge", model=config.KNOWLEDGE, tools=KNOWLEDGE_TOOLS
 )
-_AGENTS = {agent.name: agent for agent in (CHAT_AGENT, KNOWLEDGE_AGENT)}
+INVALID_AGENT = Agent(name="invalid", model=config.INVALID, tools=())
+_AGENTS = {
+    agent.name: agent
+    for agent in (CHAT_AGENT, KNOWLEDGE_AGENT, INVALID_AGENT)
+}
 
 
 def get_agent(name: str) -> Agent:

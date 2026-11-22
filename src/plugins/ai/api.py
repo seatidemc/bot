@@ -1,6 +1,6 @@
 """OpenAI 兼容 Chat Completions 客户端，支持工具调用。
 
-三个模型（router / chat / knowledge）共用本模块，通过传入不同的
+router / chat / knowledge / invalid 共用本模块，通过传入不同的
 ``ModelConfig`` 决定端点、模型 id、temperature、thinking effort 等。
 """
 

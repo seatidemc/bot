@@ -1,14 +1,12 @@
 """AI 工作流配置：router / chat / knowledge 三个模型分别可配。
 
-每个模型都可以单独配置自己的 API Key；端点、模型 id、temperature、
-thinking effort、最大输出 token、超时和系统提示词文件也可以分别配置，
-未单独配置时回退到 ``AI_DEFAULT_*`` 默认值。
+invalid agent 复用 chat 的模型与采样参数，只单独加载提示词文件。
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -87,8 +85,56 @@ def _thinking_effort(name: str, default: str, label: str) -> str:
     return raw
 
 
+# 提示词共享片段：{{include: shared/xxx.md}}
+# 相对路径以声明该指令的提示词文件所在目录为准，支持嵌套。
+_INCLUDE_RE = re.compile(r"\{\{\s*include\s*:\s*([^{}\n]+?)\s*\}\}")
+_MAX_INCLUDE_DEPTH = 8
+
+
+class _PromptError(Exception):
+    """提示词读取或 include 展开失败。"""
+
+
+def _read_prompt_file(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise _PromptError(f"读取失败: {path} ({e})") from e
+
+
+def _expand_includes(
+    text: str, base_dir: Path, stack: tuple[Path, ...]
+) -> str:
+    """展开提示词里的 include 指令。"""
+
+    def replace(match: re.Match[str]) -> str:
+        raw = match.group(1).strip().strip("\"'")
+        if not raw:
+            raise _PromptError("include 路径为空")
+
+        target = Path(raw).expanduser()
+        if not target.is_absolute():
+            target = base_dir / target
+        target = target.resolve()
+
+        if target in stack:
+            raise _PromptError(f"include 出现循环: {target}")
+        if len(stack) >= _MAX_INCLUDE_DEPTH:
+            raise _PromptError(
+                f"include 嵌套超过 {_MAX_INCLUDE_DEPTH} 层: {target}"
+            )
+
+        content = _read_prompt_file(target)
+        nested = _expand_includes(
+            content, target.parent, stack + (target,)
+        )
+        return nested.strip()
+
+    return _INCLUDE_RE.sub(replace, text)
+
+
 def _load_prompt(file_value: str, component: str) -> str:
-    """读取组件对应的系统提示词文件；失败时返回空字符串。
+    """读取系统提示词文件并展开 include；失败时返回空字符串。
 
     空字符串会让启动校验失败，不会静默使用内置提示词。
     """
@@ -102,11 +148,12 @@ def _load_prompt(file_value: str, component: str) -> str:
         path = _PROJECT_ROOT / path
 
     try:
-        content = path.read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeDecodeError) as e:
-        logger.warning(
-            f"[{component}] 系统提示词文件读取失败: {path} ({e})"
-        )
+        path = path.resolve()
+        content = _expand_includes(
+            _read_prompt_file(path), path.parent, (path,)
+        ).strip()
+    except (_PromptError, OSError) as e:
+        logger.warning(f"[{component}] 系统提示词文件读取失败: {e}")
         return ""
 
     if not content:
@@ -174,6 +221,18 @@ def _build_chat() -> ModelConfig:
 
 
 CHAT: ModelConfig = _build_chat()
+
+# invalid agent 只为 router 判为无意义的消息生成一句回应，不调用工具。
+# 它复用 chat 的模型、端点和采样参数，只使用自己的提示词。
+_INVALID_PROMPT_FILE = _text(
+    "ai_invalid_system_prompt_file", "prompts/invalid_prompt.md"
+)
+INVALID: ModelConfig = replace(
+    CHAT,
+    component="invalid",
+    system_prompt=_load_prompt(_INVALID_PROMPT_FILE, "invalid"),
+    prompt_file=_INVALID_PROMPT_FILE,
+)
 
 _ROUTER_PROMPT_FILE = _text(
     "ai_router_system_prompt_file", "prompts/router_prompt.md"
@@ -276,7 +335,7 @@ def _valid_http_url(url: str) -> bool:
 def validate_agent_configs() -> list[str]:
     """检查可静态验证的 agent 配置；返回错误列表，空列表表示通过。
 
-    AI 开启时所有 agent 都参与链路，因此三个模型的 Key、端点、模型 id、
+    AI 开启时所有 agent 都参与链路，因此各 agent 的 Key、端点、模型 id、
     系统提示词和 knowledge 的 llms.txt URL 都必须是可用配置，避免把
     配置错误拖到运行时才发现。
     """
@@ -288,8 +347,9 @@ def validate_agent_configs() -> list[str]:
         "chat": "AI_CHAT_API_KEY 或 AI_DEFAULT_API_KEY",
         "router": "AI_ROUTER_API_KEY 或 AI_DEFAULT_API_KEY",
         "knowledge": "AI_KNOWLEDGE_API_KEY 或 AI_DEFAULT_API_KEY",
+        "invalid": "AI_CHAT_API_KEY 或 AI_DEFAULT_API_KEY",
     }
-    for model in (ROUTER, CHAT, KNOWLEDGE):
+    for model in (ROUTER, CHAT, KNOWLEDGE, INVALID):
         label = model.component
         if not model.api_key:
             problems.append(
