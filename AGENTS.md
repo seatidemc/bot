@@ -37,7 +37,7 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `src/plugins/ai/__init__.py` | 非指令消息入口：AI 总开关、群 @ / 自动聊天、限流、同一用户串行处理 |
 | `src/plugins/ai/config.py` | router / chat / knowledge 三套模型配置、提示词与知识库 URL 加载 |
 | `src/plugins/ai/api.py` | OpenAI 兼容 `/chat/completions` 客户端，支持工具调用、JSON 输出、用量日志 |
-| `src/plugins/ai/agents.py` | router 判定 + 简单 agent loop（工具调用、结果回填、轮数上限） |
+| `src/plugins/ai/agents.py` | router 判定 + 简单 agent loop（工具调用、结果回填，轮数由模型自行结束） |
 | `src/plugins/ai/tools.py` | 聊天工具（实时状态、时间）与知识库工具（llms.txt 检索、受限 fetch） |
 | `src/plugins/ai/workflow.py` | 工作流编排：router → agent |
 | `src/plugins/ai/memory.py` | 进程内保存每用户最近 N 轮上下文 |
@@ -63,9 +63,7 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `AI_DEFAULT_TIMEOUT` | 各 agent 未单独配置超时时的默认值，默认 `60` 秒 |
 | `AI_ROUTER_*` | router 模型配置：`AI_ROUTER_API_KEY` 必填；`BASE_URL`、`MODEL`、`TEMPERATURE`、`THINKING_EFFORT`、`MAX_TOKENS`、`TIMEOUT`、`SYSTEM_PROMPT_FILE`、`HISTORY_TURNS` 可分别配置 |
 | `AI_CHAT_*` | 普通聊天 agent 配置，`AI_CHAT_API_KEY` 必填；其余字段同上 |
-| `AI_KNOWLEDGE_*` | 知识库 agent：`AI_KNOWLEDGE_API_KEY` 必填；其余模型字段同上，另有 `LLMS_TXT_URL`、`TOP_K`、`FETCH_TIMEOUT`、`FETCH_MAX_CHARS`、`INDEX_MAX_BYTES`、`PAGE_MAX_BYTES`、`CACHE_TTL`、`ALLOW_PRIVATE_URLS` |
-| `AI_MAX_TOOL_STEPS` | 单条消息最多工具调用轮数，默认 4；达到上限后强制生成最终回复 |
-| `AI_TOOL_RESULT_MAX_CHARS` | 单个工具结果写回模型前的最大字符数，默认 4000 |
+| `AI_KNOWLEDGE_*` | 知识库 agent：`AI_KNOWLEDGE_API_KEY` 必填；其余模型字段同上，另有 `LLMS_TXT_URL`、`TOP_K`、`FETCH_TIMEOUT`、`CACHE_TTL` |
 | `AI_MAX_TURNS` | 每用户保留的对话轮数，默认 10 |
 | `AI_HISTORY_TTL` | 上下文空闲过期秒数，默认 3600 |
 | `AI_ROUTER_HISTORY_TURNS` | router 参考最近多少轮对话，默认 3 |
@@ -158,13 +156,13 @@ SEATIDE_ENV=prod python bot.py   # 生产
 - **router**：读取系统提示词和最近 `AI_ROUTER_HISTORY_TURNS` 轮对话，输出 `{"intent":"chat"|"knowledge"}`。调用失败、输出无法解析或 intent 未知时直接报错，不切换到其他 agent。
 - **chat agent**：系统提示词默认 `prompts/system_prompt.md`，工具为 `get_server_status`、`get_current_time`。
 - **knowledge agent**：系统提示词默认 `prompts/knowledge_prompt.md`，工具为 `search_knowledge`、`fetch_url`、`get_server_status`。`search_knowledge` 拉取 `AI_KNOWLEDGE_LLMS_TXT_URL` 指向的 llms.txt 并检索条目；`fetch_url` 只允许抓取索引中出现过的 URL，返回 Markdown / 文本 / HTML 提取后的正文。
-- **agent loop**：最多 `AI_MAX_TOOL_STEPS` 轮工具调用；工具结果超过 `AI_TOOL_RESULT_MAX_CHARS` 会截断；达到上限后追加一条“不要再用工具”的提示，强制生成最终回复。
+- **agent loop**：工具结果原样写回模型，不截断；工具调用轮数不设上限，由模型自行决定何时给出最终回复。
 - **模型配置**：router / chat / knowledge 三套配置互相独立，三个 API Key 必须分别配置；端点、模型 id、temperature、thinking effort、max tokens、超时和系统提示词可分别设置，未配置时回退到 `AI_DEFAULT_*` 默认值（API Key 不回退）。
 - **上下文**：进程内存保存每用户最近 `AI_MAX_TURNS` 轮，空闲超过 `AI_HISTORY_TTL` 秒过期，重启丢失。router 和两个 agent 共享同一份对话历史，但只保存用户消息和最终回复，不保存工具调用细节。
 - **并发与限流**：同一用户的消息串行处理，全局并发受 `AI_MAX_CONCURRENCY` 限制；开启 `AI_GROUP_CHAT_WITHOUT_AT` 后，未 @ 的群消息按群每分钟限流，回复走被动消息。
 - **日志**：每次路由以 INFO 记录 `AI 路由：chat/knowledge`；每次模型调用记录 `LLM 用量[component/model]`（prompt / completion / 思考 token / 缓存命中）。
 - **知识库**：标准 llms.txt 索引（`# 标题`、`> 简介`、`## 章节`、`- [标题](URL): 说明`）；没有链接时把 llms.txt 自身当作可 fetch 的文档。索引与页面按 `AI_KNOWLEDGE_CACHE_TTL` 秒缓存，支持 Markdown、纯文本和 HTML，HTML 会去掉脚本/导航/页脚。
-- **抓取安全**：`fetch_url` 先校验 URL 必须来自 llms.txt 索引，再拒绝非 http(s)、回环和内网地址；重定向逐跳校验。本地测试本地 llms.txt 时需设 `AI_KNOWLEDGE_ALLOW_PRIVATE_URLS=true`。
+- **抓取安全**：`fetch_url` 只允许抓取 llms.txt 索引中出现过的 URL，以及 http(s) 协议；重定向逐跳校验。不再限制回环/内网地址。
 - 调用失败（超时 / 401 / 402 / 429 / router 失败）会把原因直接回复给用户，不进行 agent 切换。
 
 ## Windows 本地运行

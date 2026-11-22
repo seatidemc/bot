@@ -7,7 +7,6 @@ thinking effort、最大输出 token、超时和系统提示词文件可以分�
 
 from __future__ import annotations
 
-import ipaddress
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -231,16 +230,10 @@ AI_ENABLED: bool = _as_bool(_raw("ai_enabled"), True)
 
 AI_MAX_TURNS: int = max(1, _int("ai_max_turns", 10))
 AI_HISTORY_TTL: int = _int("ai_history_ttl", 3600)
-AI_MAX_INPUT_CHARS: int = max(1, _int("ai_max_input_chars", 2000))
-AI_MAX_REPLY_CHARS: int = max(1, _int("ai_max_reply_chars", 1200))
 AI_MAX_CONCURRENCY: int = max(1, _int("ai_max_concurrency", 4))
 
 # router 参考最近多少轮对话（用于理解追问和指代）
 AI_ROUTER_HISTORY_TURNS: int = max(0, _int("ai_router_history_turns", 3))
-# agent 单次消息最多执行多少轮工具调用
-AI_MAX_TOOL_STEPS: int = max(1, _int("ai_max_tool_steps", 4))
-# 单个工具结果写回模型前的最大字符数
-AI_TOOL_RESULT_MAX_CHARS: int = max(200, _int("ai_tool_result_max_chars", 4000))
 
 # 知识库：llms.txt 索引 + 按需 fetch
 # llms.txt 是一个 Markdown 索引，通常形如：
@@ -254,23 +247,8 @@ AI_KNOWLEDGE_TOP_K: int = max(1, _int("ai_knowledge_top_k", 5))
 AI_KNOWLEDGE_FETCH_TIMEOUT: float = max(
     1.0, _float("ai_knowledge_fetch_timeout", 15.0)
 )
-# 单次 fetch 返回给模型的最大字符数（还会受 AI_TOOL_RESULT_MAX_CHARS 截断）
-AI_KNOWLEDGE_FETCH_MAX_CHARS: int = max(
-    500, _int("ai_knowledge_fetch_max_chars", 4000)
-)
-# llms.txt 与正文页面的下载大小上限
-AI_KNOWLEDGE_INDEX_MAX_BYTES: int = max(
-    1024, _int("ai_knowledge_index_max_bytes", 512 * 1024)
-)
-AI_KNOWLEDGE_PAGE_MAX_BYTES: int = max(
-    1024, _int("ai_knowledge_page_max_bytes", 1024 * 1024)
-)
 # 索引/页面内容的内存缓存秒数，0 表示不缓存
 AI_KNOWLEDGE_CACHE_TTL: int = max(0, _int("ai_knowledge_cache_ttl", 300))
-# 默认禁止访问回环/内网地址，避免 llms.txt 被篡改后造成 SSRF
-AI_KNOWLEDGE_ALLOW_PRIVATE_URLS: bool = _as_bool(
-    _raw("ai_knowledge_allow_private_urls"), False
-)
 
 # 群内不 @ 也参与聊天，回复走被动消息
 AI_GROUP_CHAT_WITHOUT_AT: bool = _as_bool(
@@ -289,28 +267,6 @@ def _valid_http_url(url: str) -> bool:
     except ValueError:
         return False
     return parsed.scheme in {"http", "https"} and bool(parsed.hostname)
-
-
-def _is_private_host(host: str) -> bool:
-    lowered = host.lower()
-    if lowered in {"localhost", "localhost.localdomain"}:
-        return True
-    if lowered.endswith(".localhost"):
-        return True
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
-        address = address.ipv4_mapped
-    return (
-        address.is_private
-        or address.is_loopback
-        or address.is_link_local
-        or address.is_multicast
-        or address.is_reserved
-        or address.is_unspecified
-    )
 
 
 def validate_agent_configs() -> list[str]:
@@ -369,12 +325,5 @@ def validate_agent_configs() -> list[str]:
         problems.append(
             "knowledge: AI_KNOWLEDGE_LLMS_TXT_URL 必须是 http/https URL"
         )
-    else:
-        host = urlparse(AI_KNOWLEDGE_LLMS_TXT_URL).hostname or ""
-        if not AI_KNOWLEDGE_ALLOW_PRIVATE_URLS and _is_private_host(host):
-            problems.append(
-                "knowledge: AI_KNOWLEDGE_LLMS_TXT_URL 指向本机/内网地址，"
-                "本地测试请设置 AI_KNOWLEDGE_ALLOW_PRIVATE_URLS=true"
-            )
 
     return problems

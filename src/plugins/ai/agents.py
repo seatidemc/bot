@@ -133,19 +133,11 @@ async def route(text: str, history: list[dict[str, str]]) -> RouteDecision:
 # ─── agent loop ──────────────────────────────────────────────
 
 
-def _clip_tool_result(value: Any) -> str:
-    text = str(value)
-    limit = config.AI_TOOL_RESULT_MAX_CHARS
-    if len(text) > limit:
-        return text[:limit] + "\n…（结果已截断）"
-    return text
-
-
 def _tool_message(tool_id: str, content: str) -> dict[str, Any]:
     return {
         "role": "tool",
         "tool_call_id": tool_id,
-        "content": _clip_tool_result(content),
+        "content": str(content),
     }
 
 
@@ -205,7 +197,7 @@ async def run_agent(
     messages.extend(history)
     messages.append({"role": "user", "content": text})
 
-    for _ in range(config.AI_MAX_TOOL_STEPS):
+    while True:
         result = await api.chat_completion(
             agent.model,
             messages,
@@ -218,19 +210,3 @@ async def run_agent(
 
         messages.append(result.assistant_message())
         messages.extend(await _run_tool_calls(agent, result.tool_calls))
-
-    logger.warning(
-        f"[{agent.name}] 达到工具调用轮数上限 "
-        f"{config.AI_MAX_TOOL_STEPS}，强制生成最终回复"
-    )
-    messages.append(
-        {
-            "role": "user",
-            "content": (
-                "工具调用轮数已达上限，请根据已有工具结果直接给出最终回答，"
-                "不要再请求工具。"
-            ),
-        }
-    )
-    result = await api.chat_completion(agent.model, messages)
-    return result.content

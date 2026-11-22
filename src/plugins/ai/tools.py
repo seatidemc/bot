@@ -8,10 +8,8 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
 import re
-import socket
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -217,66 +215,13 @@ def _parse_llms_txt(text: str, base_url: str) -> tuple[str, list[KnowledgeEntry]
     return title, entries
 
 
-def _is_private_address(
-    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
-) -> bool:
-    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
-        address = address.ipv4_mapped
-    return (
-        address.is_private
-        or address.is_loopback
-        or address.is_link_local
-        or address.is_multicast
-        or address.is_reserved
-        or address.is_unspecified
-    )
-
-
-async def _ensure_public_url(url: str) -> None:
-    """禁止 http(s) 之外的协议，以及回环/内网地址。"""
+def _ensure_http_url(url: str) -> None:
+    """禁止 http(s) 之外的协议。"""
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
         raise KnowledgeError("只允许 http/https URL")
-    host = parsed.hostname
-    if not host:
+    if not parsed.hostname:
         raise KnowledgeError("URL 缺少主机名")
-
-    if config.AI_KNOWLEDGE_ALLOW_PRIVATE_URLS:
-        return
-
-    lowered = host.lower()
-    if (
-        lowered in {"localhost", "localhost.localdomain"}
-        or lowered.endswith(".localhost")
-    ):
-        raise KnowledgeError("禁止访问本机地址")
-
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    try:
-        infos = await asyncio.to_thread(
-            socket.getaddrinfo, host, port, type=socket.SOCK_STREAM
-        )
-    except OSError as e:
-        raise KnowledgeError(f"无法解析主机：{host}") from e
-
-    for info in infos:
-        try:
-            address = ipaddress.ip_address(info[4][0])
-        except ValueError:
-            continue
-        if _is_private_address(address):
-            raise KnowledgeError(f"禁止访问内网地址：{host}")
-
-
-async def _read_limited(resp: httpx.Response, max_bytes: int) -> bytes:
-    chunks: list[bytes] = []
-    total = 0
-    async for chunk in resp.aiter_bytes():
-        total += len(chunk)
-        if total > max_bytes:
-            raise KnowledgeError(f"响应超过 {max_bytes} 字节上限")
-        chunks.append(chunk)
-    return b"".join(chunks)
 
 
 class _HTMLTextExtractor(HTMLParser):
@@ -372,9 +317,7 @@ def _decode_body(
     raise KnowledgeError(f"不支持的内容类型：{content_type or '未知'}")
 
 
-async def _fetch_document(
-    url: str, max_bytes: int, timeout: float
-) -> tuple[str, str]:
+async def _fetch_document(url: str, timeout: float) -> tuple[str, str]:
     """抓取文本/Markdown/HTML 页面，手动校验每一次重定向。"""
     current = url.strip()
     headers = {"User-Agent": _USER_AGENT, "Accept": _ACCEPT}
@@ -384,7 +327,7 @@ async def _fetch_document(
             timeout=httpx.Timeout(timeout), follow_redirects=False
         ) as client:
             for _ in range(4):
-                await _ensure_public_url(current)
+                _ensure_http_url(current)
                 async with client.stream("GET", current, headers=headers) as resp:
                     if resp.status_code in _REDIRECT_STATUS:
                         location = resp.headers.get("location")
@@ -401,7 +344,7 @@ async def _fetch_document(
                         .strip()
                         .lower()
                     )
-                    raw = await _read_limited(resp, max_bytes)
+                    raw = await resp.aread()
                     encoding = resp.encoding or "utf-8"
                     return _decode_body(raw, encoding, content_type), current
     except httpx.TimeoutException as e:
@@ -445,7 +388,6 @@ async def _get_index() -> KnowledgeIndex:
 
         text, final_url = await _fetch_document(
             url,
-            config.AI_KNOWLEDGE_INDEX_MAX_BYTES,
             config.AI_KNOWLEDGE_FETCH_TIMEOUT,
         )
 
@@ -481,7 +423,6 @@ async def _get_page(url: str) -> str:
 
     text, _ = await _fetch_document(
         url,
-        config.AI_KNOWLEDGE_PAGE_MAX_BYTES,
         config.AI_KNOWLEDGE_FETCH_TIMEOUT,
     )
     if ttl > 0:
@@ -621,9 +562,6 @@ async def _fetch_url(url: str) -> str:
     except KnowledgeError as e:
         return f"抓取失败：{e}"
 
-    limit = config.AI_KNOWLEDGE_FETCH_MAX_CHARS
-    if len(text) > limit:
-        text = text[:limit].rstrip() + "\n…（内容已截断）"
     return f"URL：{normalized}\n\n{text}"
 
 

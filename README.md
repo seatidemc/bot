@@ -150,26 +150,18 @@ QQ_BOTS='[
 | `AI_DEFAULT_TIMEOUT` | `60` | 各 agent 未单独配置 `TIMEOUT` 时的默认请求超时秒数 |
 | `AI_ROUTER_*` | 见 `.env.example` | router 模型：`API_KEY`（必填）/ `BASE_URL` / `MODEL` / `TEMPERATURE` / `THINKING_EFFORT` / `MAX_TOKENS` / `TIMEOUT` / `SYSTEM_PROMPT_FILE` / `HISTORY_TURNS` |
 | `AI_CHAT_*` | 见 `.env.example` | chat agent 模型配置，字段同上；`API_KEY` 必填 |
-| `AI_KNOWLEDGE_*` | 见 `.env.example` | knowledge agent 模型配置，`API_KEY` 必填；另有 `LLMS_TXT_URL` / `TOP_K` / `FETCH_*` / `CACHE_TTL` / `ALLOW_PRIVATE_URLS` |
+| `AI_KNOWLEDGE_*` | 见 `.env.example` | knowledge agent 模型配置，`API_KEY` 必填；另有 `LLMS_TXT_URL` / `TOP_K` / `FETCH_TIMEOUT` / `CACHE_TTL` |
 | `AI_CHAT_SYSTEM_PROMPT_FILE` | `prompts/system_prompt.md` | chat agent 系统提示词 |
 | `AI_KNOWLEDGE_SYSTEM_PROMPT_FILE` | `prompts/knowledge_prompt.md` | knowledge agent 系统提示词 |
 | `AI_ROUTER_SYSTEM_PROMPT_FILE` | `prompts/router_prompt.md` | router 系统提示词 |
 | `AI_KNOWLEDGE_LLMS_TXT_URL` | 空 | 知识库 llms.txt 索引 URL，必须是 http/https；AI 开启时必填 |
 | `AI_KNOWLEDGE_TOP_K` | `5` | `search_knowledge` 最多返回的索引条目数 |
 | `AI_KNOWLEDGE_FETCH_TIMEOUT` | `15` | 抓取 llms.txt / 页面的超时秒数 |
-| `AI_KNOWLEDGE_FETCH_MAX_CHARS` | `4000` | 单次 fetch 返回给模型的最大字符数 |
-| `AI_KNOWLEDGE_INDEX_MAX_BYTES` | `524288` | llms.txt 下载大小上限 |
-| `AI_KNOWLEDGE_PAGE_MAX_BYTES` | `1048576` | 正文页面下载大小上限 |
 | `AI_KNOWLEDGE_CACHE_TTL` | `300` | 索引/页面内存缓存秒数，0 表示不缓存 |
-| `AI_KNOWLEDGE_ALLOW_PRIVATE_URLS` | `false` | 是否允许抓取回环/内网地址；仅本地测试时开启 |
-| `AI_MAX_TOOL_STEPS` | `4` | agent 单条消息最多工具调用轮数 |
-| `AI_TOOL_RESULT_MAX_CHARS` | `4000` | 单个工具结果写回模型前的字符上限 |
 | `AI_MAX_TURNS` | `10` | 每个用户保留的对话轮数 |
 | `AI_HISTORY_TTL` | `3600` | 上下文空闲过期秒数 |
-| `AI_MAX_INPUT_CHARS` | `2000` | 单条输入最大字符数 |
 | `AI_MAX_CONCURRENCY` | `4` | 全局最大并发模型调用数 |
 | `AI_ROUTER_HISTORY_TURNS` | `3` | router 参考最近多少轮对话 |
-| `AI_MAX_REPLY_CHARS` | `1200` | 回复最大字符数，超出截断 |
 | `AI_GROUP_CHAT_WITHOUT_AT` | `false` | 群内不 @ 也参与聊天；回复走被动消息 |
 | `AI_GROUP_CHAT_PER_MINUTE` | `5` | 每个群每分钟自动聊天回复上限，0 关闭 |
 | `HOST` / `PORT` | `127.0.0.1:8081` | HTTP 服务监听地址，建议只监听本机 |
@@ -196,7 +188,7 @@ QQ_BOTS='[
 2. 非指令消息 → 进入 AI。AI 关闭（`AI_ENABLED=false`）时回复「暂未启动AI」。
 3. AI 开启 → router 模型判断是普通聊天还是知识库问答。
 4. 普通聊天交给 chat agent，知识库问答交给 knowledge agent；各自有独立的系统提示词、模型配置和工具集。
-5. agent 可调用工具（实时服务器状态、当前时间、知识库检索），最多 `AI_MAX_TOOL_STEPS` 轮，然后给出最终回复。
+5. agent 可调用工具（实时服务器状态、当前时间、知识库检索），由模型自行决定何时结束工具调用并给出最终回复。
 
 补充说明：
 
@@ -261,7 +253,7 @@ AI_KNOWLEDGE_LLMS_TXT_URL=https://docs.example.com/llms.txt
 2. 模型再用 `fetch_url` 抓取相关页面正文，回答用户问题。
 3. 页面支持 Markdown、纯文本和 HTML；HTML 会自动提取正文并去掉脚本、导航、页脚。
 4. 索引和页面默认缓存 `AI_KNOWLEDGE_CACHE_TTL` 秒。
-5. `fetch_url` 只允许抓取 llms.txt 中列出的 URL，不能抓取任意地址；默认还会拒绝回环/内网地址，避免 SSRF。
+5. `fetch_url` 只允许抓取 llms.txt 中列出的 URL，不能抓取任意地址。
 6. `AI_ENABLED=true` 时启动阶段会检查 `AI_KNOWLEDGE_LLMS_TXT_URL` 是否存在且为 http(s) URL，并实际拉取一次 llms.txt；拉取失败或解析不到条目会直接启动失败。
 
 ### 自动聊天（不 @）

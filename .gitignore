@@ -4,6 +4,7 @@ __pycache__/
 .env
 data/
 napcat/
+*.swp
 .venv/
 .env.dev
 .env.prod

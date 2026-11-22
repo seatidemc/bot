@@ -121,9 +121,6 @@ async def handle_chat(bot: Bot, event):
             )
             return
 
-    if len(text) > config.AI_MAX_INPUT_CHARS:
-        text = text[: config.AI_MAX_INPUT_CHARS]
-
     key = _history_key(event)
 
     async with _lock_for(key):
@@ -145,8 +142,6 @@ async def handle_chat(bot: Bot, event):
     reply = result.reply
     if not reply:
         reply = "（AI 没有返回内容，换个问法试试？）"
-    if len(reply) > config.AI_MAX_REPLY_CHARS:
-        reply = reply[: config.AI_MAX_REPLY_CHARS].rstrip() + "…"
 
     memory.add_turn(key, text, reply)
     await chat.finish(reply)
@@ -179,7 +174,6 @@ async def _on_startup():
         f"knowledge={config.KNOWLEDGE.model}"
     )
     logger.info(f"知识库索引：{config.AI_KNOWLEDGE_LLMS_TXT_URL}")
-    logger.info(f"单次最多 {config.AI_MAX_TOOL_STEPS} 轮工具调用")
 
     try:
         index = await tools.check_knowledge_index()
