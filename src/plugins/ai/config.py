@@ -7,6 +7,7 @@ thinking effort、最大输出 token、超时和系统提示词文件可以分�
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -248,6 +249,8 @@ AI_KNOWLEDGE_FETCH_TIMEOUT: float = max(
 )
 # 索引/页面内容的内存缓存秒数，0 表示不缓存
 AI_KNOWLEDGE_CACHE_TTL: int = max(0, _int("ai_knowledge_cache_ttl", 300))
+# fetch_url 允许抓取的 URL 正则（完整匹配）；为空表示只受 llms.txt 索引约束
+AI_KNOWLEDGE_FETCH_URL_REGEX: str = _text("ai_knowledge_fetch_url_regex")
 
 # 群内不 @ 也参与聊天，回复走被动消息
 AI_GROUP_CHAT_WITHOUT_AT: bool = _as_bool(
@@ -324,5 +327,14 @@ def validate_agent_configs() -> list[str]:
         problems.append(
             "knowledge: AI_KNOWLEDGE_LLMS_TXT_URL 必须是 http/https URL"
         )
+
+    if AI_KNOWLEDGE_FETCH_URL_REGEX:
+        try:
+            re.compile(AI_KNOWLEDGE_FETCH_URL_REGEX)
+        except re.error as e:
+            problems.append(
+                "knowledge: AI_KNOWLEDGE_FETCH_URL_REGEX "
+                f"不是合法正则：{e}"
+            )
 
     return problems

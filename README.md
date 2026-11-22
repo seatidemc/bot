@@ -158,6 +158,7 @@ QQ_BOTS='[
 | `AI_KNOWLEDGE_TOP_K` | `5` | `search_knowledge` 最多返回的索引条目数 |
 | `AI_KNOWLEDGE_FETCH_TIMEOUT` | `15` | 抓取 llms.txt / 页面的超时秒数 |
 | `AI_KNOWLEDGE_CACHE_TTL` | `300` | 索引/页面内存缓存秒数，0 表示不缓存 |
+| `AI_KNOWLEDGE_FETCH_URL_REGEX` | 空 | `fetch_url` 允许抓取的 URL 正则（完整匹配）；空表示只受 llms.txt 索引约束，重定向逐跳校验 |
 | `AI_CHAT_LOG_RECENT` | `20` | 群聊上下文预置的最近聊天记录条数，最大 200 |
 | `AI_ROUTER_HISTORY_TURNS` | `3` | router 参考最近多少轮对话 |
 | `AI_GROUP_CHAT_WITHOUT_AT` | `false` | 群内不 @ 也参与聊天；回复走被动消息 |

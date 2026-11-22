@@ -328,6 +328,38 @@ def _ensure_http_url(url: str) -> None:
         raise KnowledgeError("URL 缺少主机名")
 
 
+_FETCH_REGEX_CACHE: "tuple[str, re.Pattern[str]] | None" = None
+
+
+def _ensure_fetch_url_allowed(url: str) -> None:
+    """校验 URL 是否匹配 AI_KNOWLEDGE_FETCH_URL_REGEX（完整匹配）。
+
+    正则留空时不做额外限制，只受 llms.txt 索引约束。
+    """
+    global _FETCH_REGEX_CACHE
+
+    raw = config.AI_KNOWLEDGE_FETCH_URL_REGEX.strip()
+    if not raw:
+        return
+
+    cached = _FETCH_REGEX_CACHE
+    if cached is not None and cached[0] == raw:
+        pattern = cached[1]
+    else:
+        try:
+            pattern = re.compile(raw)
+        except re.error as e:
+            raise KnowledgeError(
+                f"AI_KNOWLEDGE_FETCH_URL_REGEX 不是合法正则：{e}"
+            ) from e
+        _FETCH_REGEX_CACHE = (raw, pattern)
+
+    if pattern.fullmatch(url) is None:
+        raise KnowledgeError(
+            "该 URL 不在允许抓取的范围内（AI_KNOWLEDGE_FETCH_URL_REGEX）"
+        )
+
+
 class _HTMLTextExtractor(HTMLParser):
     _SKIP_TAGS = {"script", "style", "noscript", "svg", "nav", "footer", "aside"}
     _BLOCK_TAGS = {
@@ -421,8 +453,16 @@ def _decode_body(
     raise KnowledgeError(f"不支持的内容类型：{content_type or '未知'}")
 
 
-async def _fetch_document(url: str, timeout: float) -> tuple[str, str]:
-    """抓取文本/Markdown/HTML 页面，手动校验每一次重定向。"""
+async def _fetch_document(
+    url: str,
+    timeout: float,
+    *,
+    url_check: Callable[[str], None] | None = None,
+) -> tuple[str, str]:
+    """抓取文本/Markdown/HTML 页面，手动校验每一次重定向。
+
+    ``url_check`` 会在请求的每一跳上执行，避免重定向绕过白名单。
+    """
     current = url.strip()
     headers = {"User-Agent": _USER_AGENT, "Accept": _ACCEPT}
 
@@ -432,6 +472,8 @@ async def _fetch_document(url: str, timeout: float) -> tuple[str, str]:
         ) as client:
             for _ in range(4):
                 _ensure_http_url(current)
+                if url_check is not None:
+                    url_check(current)
                 async with client.stream("GET", current, headers=headers) as resp:
                     if resp.status_code in _REDIRECT_STATUS:
                         location = resp.headers.get("location")
@@ -528,6 +570,7 @@ async def _get_page(url: str) -> str:
     text, _ = await _fetch_document(
         url,
         config.AI_KNOWLEDGE_FETCH_TIMEOUT,
+        url_check=_ensure_fetch_url_allowed,
     )
     if ttl > 0:
         _PAGE_CACHE[url] = (now, text)
@@ -662,6 +705,11 @@ async def _fetch_url(url: str) -> str:
         )
 
     try:
+        _ensure_fetch_url_allowed(normalized)
+    except KnowledgeError as e:
+        return f"抓取被拒绝：{e}"
+
+    try:
         text = await _get_page(normalized)
     except KnowledgeError as e:
         return f"抓取失败：{e}"
@@ -745,7 +793,7 @@ FETCH_URL = Tool(
     name="fetch_url",
     description=(
         "抓取知识库页面正文。url 必须是 search_knowledge 返回的 llms.txt "
-        "条目 URL；不允许抓取任意网址。"
+        "条目 URL，并且要符合服务端配置的抓取白名单；不允许抓取任意网址。"
     ),
     parameters={
         "type": "object",

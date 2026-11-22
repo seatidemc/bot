@@ -63,7 +63,7 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `AI_DEFAULT_TIMEOUT` | 各 agent 未单独配置超时时的默认值，默认 `60` 秒 |
 | `AI_ROUTER_*` | router 模型配置：`AI_ROUTER_API_KEY` 必填；`BASE_URL`、`MODEL`、`TEMPERATURE`、`THINKING_EFFORT`、`MAX_TOKENS`、`TIMEOUT`、`SYSTEM_PROMPT_FILE`、`HISTORY_TURNS` 可分别配置 |
 | `AI_CHAT_*` | 普通聊天 agent 配置，`AI_CHAT_API_KEY` 必填；其余字段同上 |
-| `AI_KNOWLEDGE_*` | 知识库 agent：`AI_KNOWLEDGE_API_KEY` 必填；其余模型字段同上，另有 `LLMS_TXT_URL`、`TOP_K`、`FETCH_TIMEOUT`、`CACHE_TTL` |
+| `AI_KNOWLEDGE_*` | 知识库 agent：`AI_KNOWLEDGE_API_KEY` 必填；其余模型字段同上，另有 `LLMS_TXT_URL`、`TOP_K`、`FETCH_TIMEOUT`、`CACHE_TTL`、`FETCH_URL_REGEX` |
 | `AI_CHAT_LOG_RECENT` | 群聊上下文预置的最近聊天记录条数，默认 20，最大 200 |
 | `AI_ROUTER_HISTORY_TURNS` | router 参考最近多少轮对话，默认 3 |
 | `AI_GROUP_CHAT_WITHOUT_AT` | 群内不 @ 是否参与聊天，默认 false |
@@ -162,7 +162,7 @@ SEATIDE_ENV=prod python bot.py   # 生产
 - **私聊**：暂不支持。私聊事件会被直接忽略，指令和 AI 都只处理群聊。
 - **日志**：每次路由以 INFO 记录 `AI 路由：chat/knowledge`；每次模型调用记录 `LLM 用量[component/model]`（prompt / completion / 思考 token / 缓存命中）。
 - **知识库**：标准 llms.txt 索引（`# 标题`、`> 简介`、`## 章节`、`- [标题](URL): 说明`）；没有链接时把 llms.txt 自身当作可 fetch 的文档。索引与页面按 `AI_KNOWLEDGE_CACHE_TTL` 秒缓存，支持 Markdown、纯文本和 HTML，HTML 会去掉脚本/导航/页脚。
-- **抓取安全**：`fetch_url` 只允许抓取 llms.txt 索引中出现过的 URL，以及 http(s) 协议；重定向逐跳校验。不再限制回环/内网地址。
+- **抓取安全**：`fetch_url` 只允许抓取 llms.txt 索引中出现过的 URL，以及 http(s) 协议；配置 `AI_KNOWLEDGE_FETCH_URL_REGEX` 后，URL 还必须完整匹配该正则（作为额外白名单），留空则不额外限制。重定向逐跳校验协议和正则。不再限制回环/内网地址。
 - 调用失败（超时 / 401 / 402 / 429 / router 失败）会把原因直接回复给用户，不进行 agent 切换。
 
 ## Windows 本地运行
