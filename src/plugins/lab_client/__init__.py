@@ -17,6 +17,7 @@ from nonebot.adapters.qq import (
 )
 from nonebot.log import logger
 from nonebot.permission import Permission
+from nonebot.rule import Rule
 
 from . import api
 from . import config
@@ -83,6 +84,11 @@ async def _is_group(event) -> bool:
 PRIVATE = Permission(_is_private)
 GROUP = Permission(_is_group)
 PRIVATE_OR_GROUP = PRIVATE | GROUP
+
+
+def is_command_text(text: str) -> bool:
+    """以 / 或 ／ 开头的消息一律视为指令，无论指令是否存在。"""
+    return text.startswith(("/", "／"))
 
 
 # ─── 自动发现群 openid ────────────────────────────────────────
@@ -237,25 +243,31 @@ async def handle_start():
         )
 
 
-# ─── 兜底：私聊非命令消息 ─────────────────────────────────────
+# ─── 兜底：未知指令 ─────────────────────────────────────────
 
 _HELP_TEXT = (
-    "可用命令：\n"
+    "可用指令：\n"
     "  /状态  查看服务器状态\n"
     "  /启动  一键启动服务器"
 )
 
-_fallback = on_message(permission=PRIVATE, priority=99, block=False)
+
+def _is_unknown_command(event) -> bool:
+    return is_command_text(event.get_plaintext().strip())
 
 
-@_fallback.handle()
-async def handle_fallback(event: C2CMessageCreateEvent):
+# 已知指令由上面的 on_command 以更高优先级处理并 block；
+# 能走到这里的斜杠开头消息就是未知指令。
+_unknown_command = on_message(
+    rule=Rule(_is_unknown_command),
+    permission=PRIVATE_OR_GROUP,
+    priority=50,
+    block=True,
+)
+
+
+@_unknown_command.handle()
+async def handle_unknown_command(event):
     text = event.get_plaintext().strip()
-    # 所有已知命令，留给 on_command handler 处理
-    _cmds = (
-        "/状态", "/status", "/zt",
-        "/启动", "/start", "/qd",
-    )
-    if any(text.startswith(c) for c in _cmds):
-        return
-    await _fallback.finish(_HELP_TEXT)
+    name = text.split(maxsplit=1)[0] if text else "/"
+    await _unknown_command.finish(f"❓ 指令不存在：{name}\n{_HELP_TEXT}")

@@ -1,4 +1,10 @@
-"""DeepSeek 智能对话：私聊任意消息、群内 @bot 即可聊天。"""
+"""AI 对话插件：非指令消息 → router → chat / knowledge agent。
+
+整体结构：
+- / 开头的消息一律视为指令；未知指令由 lab_client 的兜底匹配器回复。
+- 非指令消息进入本插件；AI 关闭时回复「暂未启动AI」。
+- AI 开启时先由 router 判断是普通聊天还是知识库问答，再交给对应 agent。
+"""
 
 from __future__ import annotations
 
@@ -16,8 +22,8 @@ from nonebot.log import logger
 from nonebot.permission import Permission
 from nonebot.rule import Rule
 
-from ..lab_client import is_group_addressed
-from . import api, config, memory
+from ..lab_client import is_command_text, is_group_addressed
+from . import api, config, memory, tools, workflow
 
 # ─── 权限：私聊 / 群聊 ────────────────────────────────────────
 
@@ -27,16 +33,23 @@ PRIVATE_OR_ANY_GROUP = PRIVATE | GROUP_ANY
 
 
 def _chat_allowed(event) -> bool:
-    """决定哪些消息会进入 AI 聊天匹配器。"""
-    if not config.AI_ENABLED:
-        return False
+    """决定哪些消息会进入 AI 工作流。"""
     if isinstance(event, C2CMessageCreateEvent):
-        return True
+        return not is_command_text(event.get_plaintext().strip())
+
     if not isinstance(event, GroupMessageCreateEvent):
         return False
     if getattr(getattr(event, "author", None), "bot", False):
         return False
-    return is_group_addressed(event) or config.AI_GROUP_CHAT_WITHOUT_AT
+
+    text = event.get_plaintext().strip()
+    if is_command_text(text):
+        # 指令（包括未知指令）交给 lab_client 处理
+        return False
+    if is_group_addressed(event):
+        return True
+    # 未 @ 的群消息只有在 AI 开启且显式允许自动聊天时才处理
+    return config.AI_ENABLED and config.AI_GROUP_CHAT_WITHOUT_AT
 
 
 chat_allowed = Rule(_chat_allowed)
@@ -79,14 +92,6 @@ async def _allow_auto_chat(group_openid: str) -> bool:
         return True
 
 
-HELP_TEXT = (
-    "可用命令：\n"
-    "  /状态  查看服务器状态\n"
-    "  /启动  一键启动服务器\n"
-    "其他问题直接发文字和我聊就行～"
-)
-
-
 # ─── 聊天匹配器 ──────────────────────────────────────────────
 
 chat = on_message(
@@ -98,17 +103,15 @@ chat = on_message(
 async def handle_chat(bot: Bot, event):
     text = event.get_plaintext().strip()
     is_group = isinstance(event, GroupMessageCreateEvent)
-    addressed = is_group_addressed(event) if is_group else False
+    addressed = is_group_addressed(event) if is_group else True
 
     if not text:
         if addressed or not is_group:
             await chat.finish("目前只支持文字聊天哦，直接发文字给我就行～")
         return
 
-    # 命令交给 lab_client 处理；群里没 @ 的命令直接忽略，避免误触发和刷屏
-    if text.startswith(("/", "／")):
-        if addressed:
-            await chat.finish(HELP_TEXT)
+    if not config.AI_ENABLED:
+        await chat.finish("暂未启动AI")
         return
 
     if is_group and not addressed:
@@ -126,22 +129,20 @@ async def handle_chat(bot: Bot, event):
     async with _lock_for(key):
         # 同一个人连发多条时排队，避免上下文交错
         history = memory.get_messages(key)
-        messages: list[dict[str, str]] = []
-        if config.AI_SYSTEM_PROMPT:
-            messages.append(
-                {"role": "system", "content": config.AI_SYSTEM_PROMPT}
-            )
-        messages.extend(history)
-        messages.append({"role": "user", "content": text})
 
         async with _semaphore:
             try:
-                reply = await api.chat(messages)
-            except api.DeepSeekError as e:
-                logger.warning(f"DeepSeek 调用失败: {e}")
+                result = await workflow.run(text, history)
+            except api.LLMError as e:
+                logger.warning(f"AI 调用失败: {e}")
                 await chat.finish(f"😥 AI 暂时不可用：{e.message}")
                 return
+            except Exception:
+                logger.exception("AI 工作流执行异常")
+                await chat.finish("😥 AI 暂时不可用，请稍后再试")
+                return
 
+    reply = result.reply
     if not reply:
         reply = "（AI 没有返回内容，换个问法试试？）"
     if len(reply) > config.AI_MAX_REPLY_CHARS:
@@ -155,15 +156,41 @@ async def handle_chat(bot: Bot, event):
 
 @get_driver().on_startup
 async def _on_startup():
-    if config.AI_ENABLED:
-        logger.info(
-            f"DeepSeek 对话已启用（模型 {config.DEEPSEEK_MODEL}，"
-            f"思考强度 {config.AI_THINKING_EFFORT}，"
-            f"max_tokens {config.AI_MAX_TOKENS}）"
+    if not config.AI_ENABLED:
+        logger.warning(
+            "AI 已关闭（AI_ENABLED=false），"
+            "非指令消息将回复「暂未启动AI」"
         )
-        if config.AI_GROUP_CHAT_WITHOUT_AT:
-            logger.info(
-                f"群内自动聊天已开启，每分钟最多 {config.AI_GROUP_CHAT_PER_MINUTE} 条"
-            )
-    else:
-        logger.warning("DEEPSEEK_API_KEY 未配置，AI 对话功能已关闭")
+        return
+
+    problems = config.validate_agent_configs()
+    if problems:
+        for problem in problems:
+            logger.error(f"AI 配置检查失败：{problem}")
+        raise RuntimeError(
+            "AI 配置检查失败（AI_ENABLED=true）：\n- "
+            + "\n- ".join(problems)
+        )
+
+    logger.info(
+        "AI 工作流已启用："
+        f"router={config.ROUTER.model} "
+        f"chat={config.CHAT.model} "
+        f"knowledge={config.KNOWLEDGE.model}"
+    )
+    logger.info(f"知识库索引：{config.AI_KNOWLEDGE_LLMS_TXT_URL}")
+    logger.info(f"单次最多 {config.AI_MAX_TOOL_STEPS} 轮工具调用")
+
+    try:
+        index = await tools.check_knowledge_index()
+    except tools.KnowledgeError as e:
+        logger.error(f"AI 配置检查失败：llms.txt 不可用：{e}")
+        raise RuntimeError(
+            f"AI 配置检查失败：llms.txt 不可用：{e}"
+        ) from e
+    logger.info(f"llms.txt 检查通过：{len(index.entries)} 条")
+
+    if config.AI_GROUP_CHAT_WITHOUT_AT:
+        logger.info(
+            f"群内自动聊天已开启，每分钟最多 {config.AI_GROUP_CHAT_PER_MINUTE} 条"
+        )

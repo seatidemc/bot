@@ -14,9 +14,15 @@ nonebot.logger.info(f"运行环境: {ENV_NAME} ({_env_file.name})")
 driver = nonebot.get_driver()
 driver.register_adapter(QQAdapter)
 
-nonebot.load_plugin("src.plugins.lab_client")
-nonebot.load_plugin("src.plugins.ai_chat")
-nonebot.load_plugin("src.plugins.http_api")
+for _plugin_name in (
+    "src.plugins.lab_client",
+    "src.plugins.ai",
+    "src.plugins.http_api",
+):
+    if nonebot.load_plugin(_plugin_name) is None:
+        raise SystemExit(
+            f"插件加载失败：{_plugin_name}，请检查启动日志"
+        )
 
 if __name__ == "__main__":
     nonebot.run()

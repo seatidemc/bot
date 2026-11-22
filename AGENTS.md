@@ -31,10 +31,16 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | 文件 | 职责 |
 |---|---|
 | `bot.py` | NoneBot2 入口，注册 QQ 适配器，用 `load_plugin("src.plugins.lab_client")` 加载插件 |
-| `src/plugins/lab_client/__init__.py` | 命令匹配器、群 openid 自动发现、状态格式化 |
+| `src/plugins/lab_client/__init__.py` | 命令匹配器、未知指令兜底、群 openid 自动发现、状态格式化 |
 | `src/plugins/lab_client/config.py` | 从 NoneBot 配置读取 `BACKEND_BASE_URL`、`GROUP_OPENID` |
 | `src/plugins/lab_client/api.py` | 对后端机器人接口的 HTTP 封装（`ping` / `server-status` / `trigger-one-click-start`），路径直接拼在 `BACKEND_BASE_URL` 后。无鉴权，后端响应格式 `{"data": ...}` / `{"details": "..."}` |
-| `src/plugins/ai_chat/` | DeepSeek 多轮对话插件：`config.py` 读配置，`api.py` 调 `/chat/completions`，`memory.py` 进程内保存每用户最近 N 轮上下文，`__init__.py` 注册私聊 / 群 @ 聊天 |
+| `src/plugins/ai/__init__.py` | 非指令消息入口：AI 总开关、群 @ / 自动聊天、限流、同一用户串行处理 |
+| `src/plugins/ai/config.py` | router / chat / knowledge 三套模型配置、提示词与知识库 URL 加载 |
+| `src/plugins/ai/api.py` | OpenAI 兼容 `/chat/completions` 客户端，支持工具调用、JSON 输出、用量日志 |
+| `src/plugins/ai/agents.py` | router 判定 + 简单 agent loop（工具调用、结果回填、轮数上限） |
+| `src/plugins/ai/tools.py` | 聊天工具（实时状态、时间）与知识库工具（llms.txt 检索、受限 fetch） |
+| `src/plugins/ai/workflow.py` | 工作流编排：router → agent |
+| `src/plugins/ai/memory.py` | 进程内保存每用户最近 N 轮上下文 |
 | `src/plugins/http_api/` | 对外 HTTP 接口：`POST /bot/group-message` 向固定群发消息，`GET /bot/health` 探活；仅回环地址，随 NoneBot 的 FastAPI 驱动启动 |
 | `test_mock_client.py` | [已废弃] 旧版 OneBot v11 模拟客户端，迁移至 adapter-qq 后不再可用 |
 
@@ -48,14 +54,19 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `BACKEND_BASE_URL` | 后端完整前缀，唯一需要配置的后端参数。本机用 `http://127.0.0.1:45678/bot-v1`；API 路径直接拼在它后面，代码不自动追加 `/bot-v1` |
 | `GROUP_OPENID` | 目标群 openid。首次收到群消息会自动记录并写入 `data/group_openid.txt`，重启后继续生效；也可手动填入固定使用 |
 | `QQ_BOTS` | JSON 数组，含 bot 的 `id`、`token`、`secret`、`intent` |
-| `DEEPSEEK_API_KEY` | DeepSeek API Key，留空则 AI 对话关闭（私聊自动回复命令帮助） |
-| `DEEPSEEK_BASE_URL` | 默认 `https://api.deepseek.com` |
-| `DEEPSEEK_MODEL` | 默认 `deepseek-chat` |
-| `AI_SYSTEM_PROMPT_FILE` | 系统提示词 Markdown 路径（如 `prompts/system_prompt.md`）；留空或路径无效则不发送系统提示词 |
-| `AI_MAX_TOKENS` | 单次回复最大输出 token 数（含思考内容），默认 800 |
-| `AI_THINKING_EFFORT` | 思考强度，默认 `low`；`none` 关闭思考，`low` / `high` / `max` 开启思考 |
+| `DEEPSEEK_BASE_URL` | 三个模型共用的默认端点，默认 `https://api.deepseek.com`，可被各模型覆盖 |
+| `DEEPSEEK_MODEL` | 三个模型共用的默认模型 id，默认 `deepseek-chat`，可被各模型覆盖 |
+| `AI_ENABLED` | 整个 AI 链路唯一开关，默认 `true`；`false` 时不调用任何模型，非指令消息回复「暂未启动AI」 |
+| `AI_ROUTER_*` | router 模型配置：`AI_ROUTER_API_KEY` 必填；`BASE_URL`、`MODEL`、`TEMPERATURE`、`THINKING_EFFORT`、`MAX_TOKENS`、`TIMEOUT`、`SYSTEM_PROMPT_FILE`、`HISTORY_TURNS` 可分别配置 |
+| `AI_CHAT_*` | 普通聊天 agent 配置，`AI_CHAT_API_KEY` 必填；其余字段同上，`SYSTEM_PROMPT_FILE` 留空时回退 `AI_SYSTEM_PROMPT_FILE` |
+| `AI_KNOWLEDGE_*` | 知识库 agent：`AI_KNOWLEDGE_API_KEY` 必填；其余模型字段同上，另有 `LLMS_TXT_URL`、`TOP_K`、`FETCH_TIMEOUT`、`FETCH_MAX_CHARS`、`INDEX_MAX_BYTES`、`PAGE_MAX_BYTES`、`CACHE_TTL`、`ALLOW_PRIVATE_URLS` |
+| `AI_SYSTEM_PROMPT_FILE` | 旧版 chat 提示词路径；仅当 `AI_CHAT_SYSTEM_PROMPT_FILE` 留空时生效 |
+| `AI_MAX_TOKENS` / `AI_THINKING_EFFORT` / `AI_TEMPERATURE` / `AI_TIMEOUT` | chat / knowledge 未单独配置时使用的全局默认值；router 默认 temperature 0、thinking none、max_tokens 256 |
+| `AI_MAX_TOOL_STEPS` | 单条消息最多工具调用轮数，默认 4；达到上限后强制生成最终回复 |
+| `AI_TOOL_RESULT_MAX_CHARS` | 单个工具结果写回模型前的最大字符数，默认 4000 |
 | `AI_MAX_TURNS` | 每用户保留的对话轮数，默认 10 |
 | `AI_HISTORY_TTL` | 上下文空闲过期秒数，默认 3600 |
+| `AI_ROUTER_HISTORY_TURNS` | router 参考最近多少轮对话，默认 3 |
 | `AI_GROUP_CHAT_WITHOUT_AT` | 群内不 @ 是否参与聊天，默认 false |
 | `AI_GROUP_CHAT_PER_MINUTE` | 每个群每分钟自动聊天回复上限，默认 5 |
 | `HOST` / `PORT` | HTTP 服务监听地址，默认 `127.0.0.1:8081`，建议只监听本机 |
@@ -71,6 +82,10 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `/启动` | `start`, `qd` | 群/私聊 | 调 `POST /bot-v1/trigger-one-click-start`；任务已在跑时提示无需重复触发 |
 
 命令不需要登录；后端按来源地址限流，`/启动` 遇到 `409`（其他部署链任务执行中）或 `429` 会直接回复原因。
+
+**指令判定**：任何以 `/` 或 `／` 开头的消息都视为指令，无论该指令是否存在。已知指令由 `on_command` 处理；未知指令由 `lab_client` 的兜底匹配器回复「指令不存在」并列出可用指令。群内指令仍然需要 @bot，未 @ 的斜杠消息会被忽略。
+
+**非指令消息**：进入 `ai` 工作流。AI 关闭时回复「暂未启动AI」；AI 开启时交给 router 判断聊天类型。
 
 ## 本地测试
 
@@ -121,15 +136,34 @@ SEATIDE_ENV=prod python bot.py   # 生产
 
 `start.sh` 同样支持：`SEATIDE_ENV=prod ./start.sh`。两个文件均加入 `.gitignore`，避免 API Key 进入仓库。
 
-## DeepSeek AI 对话
+## AI 工作流
 
-- 私聊任意非命令文本、或群里 @bot 发任意文本 → 调用 DeepSeek 回复
-- 上下文保存在进程内存，无活动超过 `AI_HISTORY_TTL` 秒自动过期，重启丢失（不提供手动清空命令）
-- 同一用户的消息串行处理，全局并发受 `AI_MAX_CONCURRENCY` 限制
-- 开启 `AI_GROUP_CHAT_WITHOUT_AT` 后，未 @ 的群消息也会进入 AI；按群每分钟限流，回复走被动消息 `msg_id`，不使用主动消息额度
-- 未配置 `DEEPSEEK_API_KEY` 时 AI 匹配器不启用，`lab_client` 的兜底提示继续生效
-- 调用失败（超时 / 401 / 402 / 429）会直接把原因回复给用户
-- 每次成功调用在 `api.py` 里以 INFO 记录 `DeepSeek 用量`（prompt / completion / 思考 token / 缓存命中），用于观察成本
+整体链路：
+
+```
+非指令消息
+   │
+   ├─ AI 关闭 → 回复「暂未启动AI」
+   │
+   └─ AI 开启 → router（独立模型）
+                   │
+                   ├─ chat      → chat agent      → 最终回复
+                   └─ knowledge → knowledge agent → 最终回复
+```
+
+- **指令优先**：斜杠消息不会进入 AI；未知指令由 `lab_client` 回复「指令不存在」。
+- **启动校验**：`AI_ENABLED=true` 时在启动阶段检查三个模型各自独立的 API Key、BASE_URL、MODEL、系统提示词、temperature / timeout，以及 `AI_KNOWLEDGE_LLMS_TXT_URL` 是否存在且为 http(s) URL；启动时还会实际拉取一次 llms.txt，确认可访问且能解析出条目。任何一项不通过都会抛出 `RuntimeError`，直接阻止启动，不把配置错误留到运行时。
+- **router**：读取系统提示词和最近 `AI_ROUTER_HISTORY_TURNS` 轮对话，输出 `{"intent":"chat"|"knowledge"}`。调用失败、输出无法解析或 intent 未知时直接报错，不切换到其他 agent。
+- **chat agent**：系统提示词默认 `prompts/system_prompt.md`，工具为 `get_server_status`、`get_current_time`。
+- **knowledge agent**：系统提示词默认 `prompts/knowledge_prompt.md`，工具为 `search_knowledge`、`fetch_url`、`get_server_status`。`search_knowledge` 拉取 `AI_KNOWLEDGE_LLMS_TXT_URL` 指向的 llms.txt 并检索条目；`fetch_url` 只允许抓取索引中出现过的 URL，返回 Markdown / 文本 / HTML 提取后的正文。
+- **agent loop**：最多 `AI_MAX_TOOL_STEPS` 轮工具调用；工具结果超过 `AI_TOOL_RESULT_MAX_CHARS` 会截断；达到上限后追加一条“不要再用工具”的提示，强制生成最终回复。
+- **模型配置**：router / chat / knowledge 三套配置互相独立，三个 API Key 必须分别配置；端点、模型 id、temperature、thinking effort、max tokens、超时和系统提示词可分别设置，未配置时回退到 `DEEPSEEK_*` / `AI_*` 全局值（API Key 不回退）。
+- **上下文**：进程内存保存每用户最近 `AI_MAX_TURNS` 轮，空闲超过 `AI_HISTORY_TTL` 秒过期，重启丢失。router 和两个 agent 共享同一份对话历史，但只保存用户消息和最终回复，不保存工具调用细节。
+- **并发与限流**：同一用户的消息串行处理，全局并发受 `AI_MAX_CONCURRENCY` 限制；开启 `AI_GROUP_CHAT_WITHOUT_AT` 后，未 @ 的群消息按群每分钟限流，回复走被动消息。
+- **日志**：每次路由以 INFO 记录 `AI 路由：chat/knowledge`；每次模型调用记录 `LLM 用量[component/model]`（prompt / completion / 思考 token / 缓存命中）。
+- **知识库**：标准 llms.txt 索引（`# 标题`、`> 简介`、`## 章节`、`- [标题](URL): 说明`）；没有链接时把 llms.txt 自身当作可 fetch 的文档。索引与页面按 `AI_KNOWLEDGE_CACHE_TTL` 秒缓存，支持 Markdown、纯文本和 HTML，HTML 会去掉脚本/导航/页脚。
+- **抓取安全**：`fetch_url` 先校验 URL 必须来自 llms.txt 索引，再拒绝非 http(s)、回环和内网地址；重定向逐跳校验。本地测试本地 llms.txt 时需设 `AI_KNOWLEDGE_ALLOW_PRIVATE_URLS=true`。
+- 调用失败（超时 / 401 / 402 / 429 / router 失败）会把原因直接回复给用户，不进行 agent 切换。
 
 ## Windows 本地运行
 
