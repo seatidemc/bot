@@ -1,6 +1,7 @@
-"""AI 工作流配置：router / chat / knowledge 三个模型分别可配。
+"""AI 工作流配置：router（TypeSafe System One）与 chat / knowledge 分别可配。
 
 invalid agent 复用 chat 的模型与采样参数，只单独加载提示词文件。
+router 不使用 AI_DEFAULT_*，也不经过 openai-completions 接口。
 """
 
 from __future__ import annotations
@@ -127,7 +128,7 @@ def _load_prompt(file_value: str, component: str) -> str:
 
 @dataclass(frozen=True)
 class ModelConfig:
-    """一个 OpenAI 兼容 Chat Completions 端点的完整配置。"""
+    """一个 OpenAI Chat Completions（openai-completions）端点的完整配置。"""
 
     component: str
     api_key: str
@@ -141,7 +142,24 @@ class ModelConfig:
     prompt_file: str
 
 
-# AI_DEFAULT_* 是三个模型共用的 fallback 值
+@dataclass(frozen=True)
+class RouterConfig:
+    """TypeSafe System One 分类器的配置。
+
+    System One 只有 state / questions 两个输入，没有 system prompt、
+    temperature、max_tokens 或思考强度；重试由 SDK 的 RetryPolicy 负责。
+    """
+
+    component: str
+    api_key: str
+    base_url: str
+    model: str
+    timeout: float
+    max_retries: int
+    history_turns: int
+
+
+# AI_DEFAULT_* 是 chat / knowledge / invalid 共用的 fallback 值（router 不用）
 AI_DEFAULT_API_KEY: str = _text("ai_default_api_key")
 AI_DEFAULT_BASE_URL: str = _text(
     "ai_default_base_url", "https://api.deepseek.com"
@@ -195,28 +213,18 @@ INVALID: ModelConfig = replace(
     prompt_file=_INVALID_PROMPT_FILE,
 )
 
-_ROUTER_PROMPT_FILE = _text(
-    "ai_router_system_prompt_file", "prompts/router_prompt.md"
-)
-ROUTER: ModelConfig = ModelConfig(
+# router 走 TypeSafe System One（typesafe-sdk），与 openai-completions 端点无关。
+# 只读取 AI_ROUTER_* 配置；请求只发送 state 和 Choice 问题，不使用提示词。
+ROUTER: RouterConfig = RouterConfig(
     component="router",
-    api_key=_text("ai_router_api_key") or AI_DEFAULT_API_KEY,
+    api_key=_text("ai_router_api_key"),
     base_url=(
-        _text("ai_router_base_url") or AI_DEFAULT_BASE_URL
+        _text("ai_router_base_url") or "https://api.typesafe.ai"
     ).rstrip("/"),
-    model=_text("ai_router_model") or AI_DEFAULT_MODEL,
-    temperature=_float(
-        "ai_router_temperature", AI_DEFAULT_TEMPERATURE
-    ),
-    max_tokens=_int("ai_router_max_tokens", AI_DEFAULT_MAX_TOKENS),
-    thinking_effort=_thinking_effort(
-        "ai_router_thinking_effort",
-        AI_DEFAULT_THINKING_EFFORT,
-        "AI_ROUTER_THINKING_EFFORT",
-    ),
-    timeout=_float("ai_router_timeout", AI_DEFAULT_TIMEOUT),
-    system_prompt=_load_prompt(_ROUTER_PROMPT_FILE, "router"),
-    prompt_file=_ROUTER_PROMPT_FILE,
+    model=_text("ai_router_model") or "jev-latest",
+    timeout=_float("ai_router_timeout", 20.0),
+    max_retries=max(0, _int("ai_router_max_retries", 2)),
+    history_turns=max(0, _int("ai_router_history_turns", 3)),
 )
 
 _KNOWLEDGE_PROMPT_FILE = _text(
@@ -253,9 +261,6 @@ AI_ENABLED: bool = _as_bool(_raw("ai_enabled"), True)
 
 # 群聊上下文直接取自永久聊天记录：每次请求预置最近多少条
 AI_CHAT_LOG_RECENT: int = min(200, max(0, _int("ai_chat_log_recent", 20)))
-
-# router 参考最近多少轮对话（用于理解追问和指代）
-AI_ROUTER_HISTORY_TURNS: int = max(0, _int("ai_router_history_turns", 3))
 
 # 知识库：llms.txt 索引 + 按需 fetch
 # llms.txt 是一个 Markdown 索引，通常形如：
@@ -296,7 +301,7 @@ def _valid_http_url(url: str) -> bool:
 def validate_agent_configs() -> list[str]:
     """检查可静态验证的 agent 配置；返回错误列表，空列表表示通过。
 
-    AI 开启时所有 agent 都参与链路，因此各 agent 的 Key、端点、模型 id、
+    AI 开启时 router 与三个 agent 都参与链路，因此各方的 Key、端点、模型 id、
     系统提示词和 knowledge 的 llms.txt URL 都必须是可用配置，避免把
     配置错误拖到运行时才发现。
     """
@@ -304,13 +309,30 @@ def validate_agent_configs() -> list[str]:
         return []
 
     problems: list[str] = []
+
+    # router：TypeSafe System One
+    if not ROUTER.api_key:
+        problems.append(
+            "router: 未配置 API Key（AI_ROUTER_API_KEY）"
+        )
+    if not ROUTER.model:
+        problems.append("router: 模型 id 为空")
+    if not _valid_http_url(ROUTER.base_url):
+        problems.append(
+            "router: BASE_URL 必须是 http/https URL，"
+            f"当前为 {ROUTER.base_url!r}"
+        )
+    if ROUTER.timeout <= 0:
+        problems.append(
+            f"router: TIMEOUT 必须大于 0，当前为 {ROUTER.timeout}"
+        )
+
     key_hints = {
         "chat": "AI_CHAT_API_KEY 或 AI_DEFAULT_API_KEY",
-        "router": "AI_ROUTER_API_KEY 或 AI_DEFAULT_API_KEY",
         "knowledge": "AI_KNOWLEDGE_API_KEY 或 AI_DEFAULT_API_KEY",
         "invalid": "AI_CHAT_API_KEY 或 AI_DEFAULT_API_KEY",
     }
-    for model in (ROUTER, CHAT, KNOWLEDGE, INVALID):
+    for model in (CHAT, KNOWLEDGE, INVALID):
         label = model.component
         if not model.api_key:
             problems.append(

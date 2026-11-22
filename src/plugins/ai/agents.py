@@ -1,8 +1,9 @@
-"""router 与三个 agent：普通聊天 / 知识库问答 / 无意义消息回应。
+"""三个 agent：普通聊天 / 知识库问答 / 无意义消息回应。
 
 每个 agent 拥有独立的模型配置、系统提示词和工具集；这里实现一个
-简单的 OpenAI 兼容工具调用循环（agent loop）。invalid agent 不使用工具，
-只负责对 router 判为无意义的消息生成一句自然回应。
+基于 openai SDK 的 Chat Completions 工具调用循环（agent loop）。invalid
+agent 不使用工具，只负责对 router 判为无意义的消息生成一句自然回应。
+router 本身在 ``router.py``，通过 TypeSafe System One 分类。
 """
 
 from __future__ import annotations
@@ -45,74 +46,6 @@ _AGENTS = {
 
 def get_agent(name: str) -> Agent:
     return _AGENTS[name]
-
-
-# ─── router ──────────────────────────────────────────────────
-
-
-@dataclass(frozen=True)
-class RouteDecision:
-    intent: str
-    reason: str = ""
-
-
-_INTENTS = ("chat", "knowledge", "invalid")
-
-
-def _parse_route(content: str, finish_reason: str = "") -> RouteDecision:
-    """严格解析 router 输出：只接受合法 JSON，intent 必须是固定枚举值。"""
-
-    def fail(message: str):
-        raise api.LLMError(
-            message,
-            component="router",
-            model=config.ROUTER.model,
-        )
-
-    text = content.strip()
-    if not text:
-        fail(
-            "router 返回空内容"
-            f"（finish_reason={finish_reason or '未知'}）"
-        )
-
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        fail(f"router 输出不是合法 JSON：{content[:120]!r}")
-
-    if not isinstance(data, dict):
-        fail(f"router 输出不是 JSON 对象：{content[:120]!r}")
-
-    intent = data.get("intent")
-    if intent not in _INTENTS:
-        fail(f"router 返回未知 intent：{intent!r}")
-
-    reason = str(data.get("reason") or "").strip()[:120]
-    return RouteDecision(intent, reason)
-
-
-async def route(text: str, history: list[dict[str, str]]) -> RouteDecision:
-    messages: list[dict[str, Any]] = []
-    if config.ROUTER.system_prompt:
-        messages.append(
-            {"role": "system", "content": config.ROUTER.system_prompt}
-        )
-
-    limit = config.AI_ROUTER_HISTORY_TURNS * 2
-    if limit > 0 and history:
-        messages.extend(history[-limit:])
-    messages.append({"role": "user", "content": text})
-
-    result = await api.chat_completion(
-        config.ROUTER,
-        messages,
-        response_format={"type": "json_object"},
-    )
-    decision = _parse_route(result.content, result.finish_reason)
-    reason = f"（{decision.reason}）" if decision.reason else ""
-    logger.info(f"AI 路由：{decision.intent}{reason}")
-    return decision
 
 
 # ─── agent loop ──────────────────────────────────────────────

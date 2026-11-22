@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from . import agents
+from . import agents, router
 
 
 @dataclass(frozen=True)
@@ -20,7 +20,7 @@ async def run(text: str, history: list[dict[str, str]]) -> WorkflowResult:
     chat / knowledge / invalid 都是真实 agent；invalid 没有工具，只负责
     用日常语气表达“没看懂”，不再返回固定文案。
     """
-    decision = await agents.route(text, history)
+    decision = await router.route(text, history)
     agent = agents.get_agent(decision.intent)
     reply = await agents.run_agent(agent, text, history)
     return WorkflowResult(

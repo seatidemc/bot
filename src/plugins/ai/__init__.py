@@ -201,7 +201,8 @@ async def _on_startup():
 
     logger.info(
         "AI 工作流已启用："
-        f"router={config.ROUTER.model} "
+        f"router={config.ROUTER.model}（System One，"
+        f"{config.ROUTER.base_url}） "
         f"chat={config.CHAT.model} "
         f"knowledge={config.KNOWLEDGE.model} "
         f"invalid={config.INVALID.model}"
