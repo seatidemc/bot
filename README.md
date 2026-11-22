@@ -141,13 +141,17 @@ QQ_BOTS='[
 | `BACKEND_BASE_URL` | `http://127.0.0.1:45678/bot-v1` | 后端完整前缀，需包含 `/bot-v1`；bot 不会自动追加路径段 |
 | `GROUP_OPENID` | 空 | 目标群 openid，留空则自动记录 |
 | `QQ_BOTS` | 无 | 机器人凭据 JSON 数组 |
-| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | 三个模型共用的默认接口地址（可被各模型覆盖） |
-| `DEEPSEEK_MODEL` | `deepseek-chat` | 三个模型共用的默认模型名（可被各模型覆盖） |
 | `AI_ENABLED` | `true` | 整个 AI 链路唯一开关；`false` 时非指令消息回复「暂未启动AI」；`true` 时启动阶段校验配置 |
+| `AI_DEFAULT_BASE_URL` | `https://api.deepseek.com` | 各 agent 未单独配置 `BASE_URL` 时的默认端点 |
+| `AI_DEFAULT_MODEL` | `deepseek-chat` | 各 agent 未单独配置 `MODEL` 时的默认模型名 |
+| `AI_DEFAULT_TEMPERATURE` | `1.0` | 各 agent 未单独配置 `TEMPERATURE` 时的默认温度 |
+| `AI_DEFAULT_MAX_TOKENS` | `800` | 各 agent 未单独配置 `MAX_TOKENS` 时的默认最大输出 token |
+| `AI_DEFAULT_THINKING_EFFORT` | `low` | 各 agent 未单独配置思考强度时的默认值：`none` / `low` / `high` / `max` |
+| `AI_DEFAULT_TIMEOUT` | `60` | 各 agent 未单独配置 `TIMEOUT` 时的默认请求超时秒数 |
 | `AI_ROUTER_*` | 见 `.env.example` | router 模型：`API_KEY`（必填）/ `BASE_URL` / `MODEL` / `TEMPERATURE` / `THINKING_EFFORT` / `MAX_TOKENS` / `TIMEOUT` / `SYSTEM_PROMPT_FILE` / `HISTORY_TURNS` |
 | `AI_CHAT_*` | 见 `.env.example` | chat agent 模型配置，字段同上；`API_KEY` 必填 |
 | `AI_KNOWLEDGE_*` | 见 `.env.example` | knowledge agent 模型配置，`API_KEY` 必填；另有 `LLMS_TXT_URL` / `TOP_K` / `FETCH_*` / `CACHE_TTL` / `ALLOW_PRIVATE_URLS` |
-| `AI_CHAT_SYSTEM_PROMPT_FILE` | `prompts/system_prompt.md` | chat agent 系统提示词；留空回退 `AI_SYSTEM_PROMPT_FILE` |
+| `AI_CHAT_SYSTEM_PROMPT_FILE` | `prompts/system_prompt.md` | chat agent 系统提示词 |
 | `AI_KNOWLEDGE_SYSTEM_PROMPT_FILE` | `prompts/knowledge_prompt.md` | knowledge agent 系统提示词 |
 | `AI_ROUTER_SYSTEM_PROMPT_FILE` | `prompts/router_prompt.md` | router 系统提示词 |
 | `AI_KNOWLEDGE_LLMS_TXT_URL` | 空 | 知识库 llms.txt 索引 URL，必须是 http/https；AI 开启时必填 |
@@ -160,10 +164,6 @@ QQ_BOTS='[
 | `AI_KNOWLEDGE_ALLOW_PRIVATE_URLS` | `false` | 是否允许抓取回环/内网地址；仅本地测试时开启 |
 | `AI_MAX_TOOL_STEPS` | `4` | agent 单条消息最多工具调用轮数 |
 | `AI_TOOL_RESULT_MAX_CHARS` | `4000` | 单个工具结果写回模型前的字符上限 |
-| `AI_TEMPERATURE` | `1.0` | chat / knowledge 未单独配置时的默认温度（router 默认 0） |
-| `AI_TIMEOUT` | `60` | chat / knowledge 未单独配置时的默认请求超时秒数（router 默认 20） |
-| `AI_MAX_TOKENS` | `800` | chat / knowledge 未单独配置时的默认最大输出 token（router 默认 256） |
-| `AI_THINKING_EFFORT` | `low` | chat / knowledge 未单独配置时的思考强度：`none` / `low` / `high` / `max`（router 默认 none） |
 | `AI_MAX_TURNS` | `10` | 每个用户保留的对话轮数 |
 | `AI_HISTORY_TTL` | `3600` | 上下文空闲过期秒数 |
 | `AI_MAX_INPUT_CHARS` | `2000` | 单条输入最大字符数 |
@@ -206,7 +206,7 @@ QQ_BOTS='[
 - 启动校验：`AI_ENABLED=true` 时会检查三个模型的 API Key、BASE_URL、MODEL、系统提示词、temperature / timeout，以及 `AI_KNOWLEDGE_LLMS_TXT_URL`；启动时还会实际拉取一次 llms.txt，确认可访问且能解析出条目。任何一项失败都会直接阻止启动，不会留到运行时降级。
 - router 调用失败或输出无法解析时，直接回复 AI 不可用错误，不切换到其他 agent。
 - 每次路由以 INFO 记录 `AI 路由：chat/knowledge`；每次模型调用记录 `LLM 用量[component/model]`：prompt / completion / 思考 token / 缓存命中情况，便于观察成本构成。
-- 三个模型的 API Key 必须分别配置；端点、模型 id、temperature、thinking effort、max tokens、超时和提示词可以分别配置，未配置时回退到 `DEEPSEEK_*` / `AI_*` 全局值。
+- 三个模型的 API Key 必须分别配置；端点、模型 id、temperature、thinking effort、max tokens、超时和提示词可以分别配置，未配置时回退到 `AI_DEFAULT_*` 默认值。
 
 三个模型可以指向不同端点或不同模型，例如：
 
@@ -231,7 +231,7 @@ AI_KNOWLEDGE_MODEL=your-model
 AI_KNOWLEDGE_TEMPERATURE=0.3
 ```
 
-三个 API Key 都必须分别填写；未填写某个模型的 `BASE_URL` / `MODEL` 时，会回退到 chat 模型（再回退到 `DEEPSEEK_*` 默认端点/模型名）。
+三个 API Key 都必须分别填写；未填写某个模型的 `BASE_URL` / `MODEL` 时，会回退到 `AI_DEFAULT_BASE_URL` / `AI_DEFAULT_MODEL`。
 
 ### 知识库（llms.txt + fetch）
 
@@ -398,7 +398,7 @@ pip install -e . -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 ## 更新记录
 
-- 2026-11-22：AI 模块改为工作流：`/` 开头统一视为指令（未知指令回复不存在），非指令消息经 router 分流到 chat / knowledge 两个 agent；新增工具调用循环、llms.txt 知识库索引与页面抓取，三个模型可分别配置
+- 2026-11-22：AI 模块改为工作流：`/` 开头统一视为指令（未知指令回复不存在），非指令消息经 router 分流到 chat / knowledge 两个 agent；新增工具调用循环、llms.txt 知识库索引与页面抓取；三个模型可分别配置，全局 fallback 统一为 `AI_DEFAULT_*`
 - 2026-11-20：命令改为对接后端 `/bot-v1`（`/状态` → `server-status`，`/启动` → `trigger-one-click-start`），移除 `/登录`、`/释放时间`、`/我的信息`、`/重置对话`；插件由 `mc_client` 改名为 `lab_client`，去掉 SQLite/JWT；`/开机` 更名为 `/启动`
 - 2026-11-20：适配群消息全量模式 `GROUP_MESSAGE_CREATE`；新增群内不 @ 自动聊天、每分钟限流和被动回复额度说明
 - 2026-11-20：后端配置简化为 `BACKEND_BASE_URL` 一项，移除 `BOT_KEY` / `BOT_USERNAME` / `BOT_PASSWORD` 与 SSE 状态推送

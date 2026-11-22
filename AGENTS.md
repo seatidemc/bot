@@ -54,14 +54,16 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `BACKEND_BASE_URL` | 后端完整前缀，唯一需要配置的后端参数。本机用 `http://127.0.0.1:45678/bot-v1`；API 路径直接拼在它后面，代码不自动追加 `/bot-v1` |
 | `GROUP_OPENID` | 目标群 openid。首次收到群消息会自动记录并写入 `data/group_openid.txt`，重启后继续生效；也可手动填入固定使用 |
 | `QQ_BOTS` | JSON 数组，含 bot 的 `id`、`token`、`secret`、`intent` |
-| `DEEPSEEK_BASE_URL` | 三个模型共用的默认端点，默认 `https://api.deepseek.com`，可被各模型覆盖 |
-| `DEEPSEEK_MODEL` | 三个模型共用的默认模型 id，默认 `deepseek-chat`，可被各模型覆盖 |
 | `AI_ENABLED` | 整个 AI 链路唯一开关，默认 `true`；`false` 时不调用任何模型，非指令消息回复「暂未启动AI」 |
+| `AI_DEFAULT_BASE_URL` | 各 agent 未单独配置 `BASE_URL` 时的默认端点，默认 `https://api.deepseek.com` |
+| `AI_DEFAULT_MODEL` | 各 agent 未单独配置 `MODEL` 时的默认模型 id，默认 `deepseek-chat` |
+| `AI_DEFAULT_TEMPERATURE` | 各 agent 未单独配置温度时的默认值，默认 `1.0` |
+| `AI_DEFAULT_MAX_TOKENS` | 各 agent 未单独配置最大输出 token 时的默认值，默认 `800` |
+| `AI_DEFAULT_THINKING_EFFORT` | 各 agent 未单独配置思考强度时的默认值，默认 `low` |
+| `AI_DEFAULT_TIMEOUT` | 各 agent 未单独配置超时时的默认值，默认 `60` 秒 |
 | `AI_ROUTER_*` | router 模型配置：`AI_ROUTER_API_KEY` 必填；`BASE_URL`、`MODEL`、`TEMPERATURE`、`THINKING_EFFORT`、`MAX_TOKENS`、`TIMEOUT`、`SYSTEM_PROMPT_FILE`、`HISTORY_TURNS` 可分别配置 |
-| `AI_CHAT_*` | 普通聊天 agent 配置，`AI_CHAT_API_KEY` 必填；其余字段同上，`SYSTEM_PROMPT_FILE` 留空时回退 `AI_SYSTEM_PROMPT_FILE` |
+| `AI_CHAT_*` | 普通聊天 agent 配置，`AI_CHAT_API_KEY` 必填；其余字段同上 |
 | `AI_KNOWLEDGE_*` | 知识库 agent：`AI_KNOWLEDGE_API_KEY` 必填；其余模型字段同上，另有 `LLMS_TXT_URL`、`TOP_K`、`FETCH_TIMEOUT`、`FETCH_MAX_CHARS`、`INDEX_MAX_BYTES`、`PAGE_MAX_BYTES`、`CACHE_TTL`、`ALLOW_PRIVATE_URLS` |
-| `AI_SYSTEM_PROMPT_FILE` | 旧版 chat 提示词路径；仅当 `AI_CHAT_SYSTEM_PROMPT_FILE` 留空时生效 |
-| `AI_MAX_TOKENS` / `AI_THINKING_EFFORT` / `AI_TEMPERATURE` / `AI_TIMEOUT` | chat / knowledge 未单独配置时使用的全局默认值；router 默认 temperature 0、thinking none、max_tokens 256 |
 | `AI_MAX_TOOL_STEPS` | 单条消息最多工具调用轮数，默认 4；达到上限后强制生成最终回复 |
 | `AI_TOOL_RESULT_MAX_CHARS` | 单个工具结果写回模型前的最大字符数，默认 4000 |
 | `AI_MAX_TURNS` | 每用户保留的对话轮数，默认 10 |
@@ -157,7 +159,7 @@ SEATIDE_ENV=prod python bot.py   # 生产
 - **chat agent**：系统提示词默认 `prompts/system_prompt.md`，工具为 `get_server_status`、`get_current_time`。
 - **knowledge agent**：系统提示词默认 `prompts/knowledge_prompt.md`，工具为 `search_knowledge`、`fetch_url`、`get_server_status`。`search_knowledge` 拉取 `AI_KNOWLEDGE_LLMS_TXT_URL` 指向的 llms.txt 并检索条目；`fetch_url` 只允许抓取索引中出现过的 URL，返回 Markdown / 文本 / HTML 提取后的正文。
 - **agent loop**：最多 `AI_MAX_TOOL_STEPS` 轮工具调用；工具结果超过 `AI_TOOL_RESULT_MAX_CHARS` 会截断；达到上限后追加一条“不要再用工具”的提示，强制生成最终回复。
-- **模型配置**：router / chat / knowledge 三套配置互相独立，三个 API Key 必须分别配置；端点、模型 id、temperature、thinking effort、max tokens、超时和系统提示词可分别设置，未配置时回退到 `DEEPSEEK_*` / `AI_*` 全局值（API Key 不回退）。
+- **模型配置**：router / chat / knowledge 三套配置互相独立，三个 API Key 必须分别配置；端点、模型 id、temperature、thinking effort、max tokens、超时和系统提示词可分别设置，未配置时回退到 `AI_DEFAULT_*` 默认值（API Key 不回退）。
 - **上下文**：进程内存保存每用户最近 `AI_MAX_TURNS` 轮，空闲超过 `AI_HISTORY_TTL` 秒过期，重启丢失。router 和两个 agent 共享同一份对话历史，但只保存用户消息和最终回复，不保存工具调用细节。
 - **并发与限流**：同一用户的消息串行处理，全局并发受 `AI_MAX_CONCURRENCY` 限制；开启 `AI_GROUP_CHAT_WITHOUT_AT` 后，未 @ 的群消息按群每分钟限流，回复走被动消息。
 - **日志**：每次路由以 INFO 记录 `AI 路由：chat/knowledge`；每次模型调用记录 `LLM 用量[component/model]`（prompt / completion / 思考 token / 缓存命中）。

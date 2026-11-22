@@ -2,7 +2,7 @@
 
 每个模型都必须独立配置自己的 API Key；端点、模型 id、temperature、
 thinking effort、最大输出 token、超时和系统提示词文件可以分别配置，
-未单独配置时回退到旧的 ``DEEPSEEK_*`` / ``AI_*`` 全局默认值。
+未单独配置时回退到 ``AI_DEFAULT_*`` 默认值。
 """
 
 from __future__ import annotations
@@ -132,37 +132,40 @@ class ModelConfig:
     prompt_file: str
 
 
-# 旧版全局配置，作为 chat / knowledge 的默认值；router 使用更轻量的默认值
-# API Key 不参与回退，三个模型必须分别配置
-_DEFAULT_BASE_URL = _text(
-    "deepseek_base_url", "https://api.deepseek.com"
+# AI_DEFAULT_* 是三个模型共用的 fallback 值；API Key 不参与回退
+AI_DEFAULT_BASE_URL: str = _text(
+    "ai_default_base_url", "https://api.deepseek.com"
 ).rstrip("/")
-_DEFAULT_MODEL = _text("deepseek_model", "deepseek-chat")
-_GLOBAL_TEMPERATURE = _float("ai_temperature", 1.0)
-_GLOBAL_MAX_TOKENS = _int("ai_max_tokens", 800)
-_GLOBAL_TIMEOUT = _float("ai_timeout", 60.0)
-AI_THINKING_EFFORT = _thinking_effort(
-    "ai_thinking_effort", "low", "AI_THINKING_EFFORT"
+AI_DEFAULT_MODEL: str = _text("ai_default_model", "deepseek-chat")
+AI_DEFAULT_TEMPERATURE: float = _float("ai_default_temperature", 1.0)
+AI_DEFAULT_MAX_TOKENS: int = _int("ai_default_max_tokens", 800)
+AI_DEFAULT_TIMEOUT: float = _float("ai_default_timeout", 60.0)
+AI_DEFAULT_THINKING_EFFORT = _thinking_effort(
+    "ai_default_thinking_effort", "low", "AI_DEFAULT_THINKING_EFFORT"
 )
 
 
 def _build_chat() -> ModelConfig:
-    prompt_file = (
-        _text("ai_chat_system_prompt_file")
-        or _text("ai_system_prompt_file")
-        or "prompts/system_prompt.md"
+    prompt_file = _text(
+        "ai_chat_system_prompt_file", "prompts/system_prompt.md"
     )
     return ModelConfig(
         component="chat",
         api_key=_text("ai_chat_api_key"),
-        base_url=(_text("ai_chat_base_url") or _DEFAULT_BASE_URL).rstrip("/"),
-        model=_text("ai_chat_model") or _DEFAULT_MODEL,
-        temperature=_float("ai_chat_temperature", _GLOBAL_TEMPERATURE),
-        max_tokens=_int("ai_chat_max_tokens", _GLOBAL_MAX_TOKENS),
-        thinking_effort=_thinking_effort(
-            "ai_chat_thinking_effort", AI_THINKING_EFFORT, "AI_CHAT_THINKING_EFFORT"
+        base_url=(
+            _text("ai_chat_base_url") or AI_DEFAULT_BASE_URL
+        ).rstrip("/"),
+        model=_text("ai_chat_model") or AI_DEFAULT_MODEL,
+        temperature=_float(
+            "ai_chat_temperature", AI_DEFAULT_TEMPERATURE
         ),
-        timeout=_float("ai_chat_timeout", _GLOBAL_TIMEOUT),
+        max_tokens=_int("ai_chat_max_tokens", AI_DEFAULT_MAX_TOKENS),
+        thinking_effort=_thinking_effort(
+            "ai_chat_thinking_effort",
+            AI_DEFAULT_THINKING_EFFORT,
+            "AI_CHAT_THINKING_EFFORT",
+        ),
+        timeout=_float("ai_chat_timeout", AI_DEFAULT_TIMEOUT),
         system_prompt=_load_prompt(prompt_file, "chat"),
         prompt_file=prompt_file,
     )
@@ -176,14 +179,20 @@ _ROUTER_PROMPT_FILE = _text(
 ROUTER: ModelConfig = ModelConfig(
     component="router",
     api_key=_text("ai_router_api_key"),
-    base_url=(_text("ai_router_base_url") or CHAT.base_url).rstrip("/"),
-    model=_text("ai_router_model") or CHAT.model,
-    temperature=_float("ai_router_temperature", 0.0),
-    max_tokens=_int("ai_router_max_tokens", 256),
-    thinking_effort=_thinking_effort(
-        "ai_router_thinking_effort", "none", "AI_ROUTER_THINKING_EFFORT"
+    base_url=(
+        _text("ai_router_base_url") or AI_DEFAULT_BASE_URL
+    ).rstrip("/"),
+    model=_text("ai_router_model") or AI_DEFAULT_MODEL,
+    temperature=_float(
+        "ai_router_temperature", AI_DEFAULT_TEMPERATURE
     ),
-    timeout=_float("ai_router_timeout", 20.0),
+    max_tokens=_int("ai_router_max_tokens", AI_DEFAULT_MAX_TOKENS),
+    thinking_effort=_thinking_effort(
+        "ai_router_thinking_effort",
+        AI_DEFAULT_THINKING_EFFORT,
+        "AI_ROUTER_THINKING_EFFORT",
+    ),
+    timeout=_float("ai_router_timeout", AI_DEFAULT_TIMEOUT),
     system_prompt=_load_prompt(_ROUTER_PROMPT_FILE, "router"),
     prompt_file=_ROUTER_PROMPT_FILE,
 )
@@ -194,16 +203,22 @@ _KNOWLEDGE_PROMPT_FILE = _text(
 KNOWLEDGE: ModelConfig = ModelConfig(
     component="knowledge",
     api_key=_text("ai_knowledge_api_key"),
-    base_url=(_text("ai_knowledge_base_url") or CHAT.base_url).rstrip("/"),
-    model=_text("ai_knowledge_model") or CHAT.model,
-    temperature=_float("ai_knowledge_temperature", 0.3),
-    max_tokens=_int("ai_knowledge_max_tokens", _GLOBAL_MAX_TOKENS),
+    base_url=(
+        _text("ai_knowledge_base_url") or AI_DEFAULT_BASE_URL
+    ).rstrip("/"),
+    model=_text("ai_knowledge_model") or AI_DEFAULT_MODEL,
+    temperature=_float(
+        "ai_knowledge_temperature", AI_DEFAULT_TEMPERATURE
+    ),
+    max_tokens=_int(
+        "ai_knowledge_max_tokens", AI_DEFAULT_MAX_TOKENS
+    ),
     thinking_effort=_thinking_effort(
         "ai_knowledge_thinking_effort",
-        AI_THINKING_EFFORT,
+        AI_DEFAULT_THINKING_EFFORT,
         "AI_KNOWLEDGE_THINKING_EFFORT",
     ),
-    timeout=_float("ai_knowledge_timeout", _GLOBAL_TIMEOUT),
+    timeout=_float("ai_knowledge_timeout", AI_DEFAULT_TIMEOUT),
     system_prompt=_load_prompt(_KNOWLEDGE_PROMPT_FILE, "knowledge"),
     prompt_file=_KNOWLEDGE_PROMPT_FILE,
 )
