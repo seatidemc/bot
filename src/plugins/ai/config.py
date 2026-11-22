@@ -85,14 +85,8 @@ def _thinking_effort(name: str, default: str, label: str) -> str:
     return raw
 
 
-# 提示词共享片段：{{include: shared/xxx.md}}
-# 相对路径以声明该指令的提示词文件所在目录为准，支持嵌套。
-_INCLUDE_RE = re.compile(r"\{\{\s*include\s*:\s*([^{}\n]+?)\s*\}\}")
-_MAX_INCLUDE_DEPTH = 8
-
-
 class _PromptError(Exception):
-    """提示词读取或 include 展开失败。"""
+    """提示词读取失败。"""
 
 
 def _read_prompt_file(path: Path) -> str:
@@ -102,39 +96,8 @@ def _read_prompt_file(path: Path) -> str:
         raise _PromptError(f"读取失败: {path} ({e})") from e
 
 
-def _expand_includes(
-    text: str, base_dir: Path, stack: tuple[Path, ...]
-) -> str:
-    """展开提示词里的 include 指令。"""
-
-    def replace(match: re.Match[str]) -> str:
-        raw = match.group(1).strip().strip("\"'")
-        if not raw:
-            raise _PromptError("include 路径为空")
-
-        target = Path(raw).expanduser()
-        if not target.is_absolute():
-            target = base_dir / target
-        target = target.resolve()
-
-        if target in stack:
-            raise _PromptError(f"include 出现循环: {target}")
-        if len(stack) >= _MAX_INCLUDE_DEPTH:
-            raise _PromptError(
-                f"include 嵌套超过 {_MAX_INCLUDE_DEPTH} 层: {target}"
-            )
-
-        content = _read_prompt_file(target)
-        nested = _expand_includes(
-            content, target.parent, stack + (target,)
-        )
-        return nested.strip()
-
-    return _INCLUDE_RE.sub(replace, text)
-
-
 def _load_prompt(file_value: str, component: str) -> str:
-    """读取系统提示词文件并展开 include；失败时返回空字符串。
+    """读取系统提示词文件；失败时返回空字符串。
 
     空字符串会让启动校验失败，不会静默使用内置提示词。
     """
@@ -149,9 +112,7 @@ def _load_prompt(file_value: str, component: str) -> str:
 
     try:
         path = path.resolve()
-        content = _expand_includes(
-            _read_prompt_file(path), path.parent, (path,)
-        ).strip()
+        content = _read_prompt_file(path).strip()
     except (_PromptError, OSError) as e:
         logger.warning(f"[{component}] 系统提示词文件读取失败: {e}")
         return ""

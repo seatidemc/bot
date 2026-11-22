@@ -188,7 +188,7 @@ QQ_BOTS='[
 1. 以 `/` 或 `／` 开头 → 指令；已知指令执行对应命令，未知指令回复「指令不存在」。
 2. 非指令消息 → 进入 AI。AI 关闭（`AI_ENABLED=false`）时回复「暂未启动AI」。
 3. AI 开启 → router 模型判断是普通聊天、知识库问答，还是无效消息。
-4. 普通聊天交给 chat agent，知识库问答交给 knowledge agent；各自有独立的系统提示词、模型配置和工具集。无效消息（乱码、无意义内容等）交给无工具的 invalid agent，用同样的猫娘语气随口接一句；用户不认真时 AI 也不必认真追问，可以跟着玩、敷衍或扯开话题，不再返回固定文案。
+4. 普通聊天交给 chat agent，知识库问答交给 knowledge agent；各自有独立的系统提示词、模型配置和工具集。无效消息（乱码、无意义内容等）交给无工具的 invalid agent 随口接一句；用户不认真时 AI 也不必认真追问，可以跟着玩、敷衍或扯开话题，不再返回固定文案。
 5. agent 可调用工具（群聊记录检索、实时服务器状态、当前时间、知识库检索），由模型自行决定何时结束工具调用并给出最终回复。
 
 补充说明：
@@ -200,7 +200,7 @@ QQ_BOTS='[
 - router 调用失败或输出无法解析时，直接回复 AI 不可用错误，不切换到其他 agent。注意 DeepSeek 在 `reasoning_effort=none` + JSON 模式下会偶发只返回空白内容，因此 `THINKING_EFFORT=none` 时代码不发送该字段（与 temperature、max_tokens 无关）。
 - 每次路由以 INFO 记录 `AI 路由：chat/knowledge/invalid`；每次模型调用记录 `LLM 用量[component/model]`：prompt / completion / 思考 token / 缓存命中情况，便于观察成本构成。
 - 三个模型的 API Key 可以分别配置；未配置时回退到 `AI_DEFAULT_API_KEY`（共用同一 Key 时只需填这一项）。invalid 复用 chat 的 API Key、端点和模型，只额外支持 `AI_INVALID_SYSTEM_PROMPT_FILE`。端点、模型 id、temperature、thinking effort、max tokens、超时和提示词也可以分别配置，未配置时回退到 `AI_DEFAULT_*` 默认值。
-- 提示词支持 `{{include: 相对路径}}` 共享片段，路径相对于当前提示词文件所在目录，可嵌套（最多 8 层，禁止循环）；`prompts/shared/` 里是 chat / knowledge / invalid 共用的服务器介绍、猫娘语气、回复长度、输出格式和注意事项。
+- router / chat / knowledge / invalid 各使用一个独立的提示词文件，不再支持 `{{include}}` 共享片段。
 
 三个模型可以指向不同端点或不同模型，例如：
 
