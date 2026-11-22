@@ -1,13 +1,12 @@
 """AI 工作流配置：router（TypeSafe System One）与 chat / knowledge 分别可配。
 
-invalid agent 复用 chat 的模型与采样参数，只单独加载提示词文件。
 router 不使用 AI_DEFAULT_*，也不经过 openai-completions 接口。
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -86,8 +85,14 @@ def _thinking_effort(name: str, default: str, label: str) -> str:
     return raw
 
 
+# 提示词复用片段：{{include: shared/xxx.md}}
+# 相对路径以声明该指令的提示词文件所在目录为准，支持嵌套，内置循环与深度保护。
+_INCLUDE_RE = re.compile(r"\{\{\s*include\s*:\s*([^{}\n]+?)\s*\}\}")
+_MAX_INCLUDE_DEPTH = 8
+
+
 class _PromptError(Exception):
-    """提示词读取失败。"""
+    """提示词读取或 include 展开失败。"""
 
 
 def _read_prompt_file(path: Path) -> str:
@@ -97,8 +102,38 @@ def _read_prompt_file(path: Path) -> str:
         raise _PromptError(f"读取失败: {path} ({e})") from e
 
 
+def _expand_includes(
+    text: str, base_dir: Path, stack: tuple[Path, ...]
+) -> str:
+    """把提示词里的 {{include: path}} 替换为对应文件的内容。"""
+
+    def replace(match: re.Match[str]) -> str:
+        raw = match.group(1).strip().strip("\"'")
+        if not raw:
+            raise _PromptError("include 路径为空")
+
+        target = Path(raw).expanduser()
+        if not target.is_absolute():
+            target = base_dir / target
+        target = target.resolve()
+
+        if target in stack:
+            raise _PromptError(f"include 出现循环: {target}")
+        if len(stack) >= _MAX_INCLUDE_DEPTH:
+            raise _PromptError(
+                f"include 嵌套超过 {_MAX_INCLUDE_DEPTH} 层: {target}"
+            )
+
+        content = _read_prompt_file(target)
+        return _expand_includes(
+            content, target.parent, stack + (target,)
+        ).strip()
+
+    return _INCLUDE_RE.sub(replace, text)
+
+
 def _load_prompt(file_value: str, component: str) -> str:
-    """读取系统提示词文件；失败时返回空字符串。
+    """读取系统提示词文件并展开 {{include: ...}}；失败时返回空字符串。
 
     空字符串会让启动校验失败，不会静默使用内置提示词。
     """
@@ -113,7 +148,9 @@ def _load_prompt(file_value: str, component: str) -> str:
 
     try:
         path = path.resolve()
-        content = _read_prompt_file(path).strip()
+        content = _expand_includes(
+            _read_prompt_file(path), path.parent, (path,)
+        ).strip()
     except (_PromptError, OSError) as e:
         logger.warning(f"[{component}] 系统提示词文件读取失败: {e}")
         return ""
@@ -159,7 +196,7 @@ class RouterConfig:
     history_turns: int
 
 
-# AI_DEFAULT_* 是 chat / knowledge / invalid 共用的 fallback 值（router 不用）
+# AI_DEFAULT_* 是 chat / knowledge 共用的 fallback 值（router 不用）
 AI_DEFAULT_API_KEY: str = _text("ai_default_api_key")
 AI_DEFAULT_BASE_URL: str = _text(
     "ai_default_base_url", "https://api.deepseek.com"
@@ -201,17 +238,6 @@ def _build_chat() -> ModelConfig:
 
 CHAT: ModelConfig = _build_chat()
 
-# invalid agent 只为 router 判为无意义的消息生成一句回应，不调用工具。
-# 它复用 chat 的模型、端点和采样参数，只使用自己的提示词。
-_INVALID_PROMPT_FILE = _text(
-    "ai_invalid_system_prompt_file", "prompts/invalid_prompt.md"
-)
-INVALID: ModelConfig = replace(
-    CHAT,
-    component="invalid",
-    system_prompt=_load_prompt(_INVALID_PROMPT_FILE, "invalid"),
-    prompt_file=_INVALID_PROMPT_FILE,
-)
 
 # router 走 TypeSafe System One（typesafe-sdk），与 openai-completions 端点无关。
 # 只读取 AI_ROUTER_* 配置；请求只发送 state 和 Choice 问题，不使用提示词。
@@ -269,14 +295,12 @@ AI_CHAT_LOG_RECENT: int = min(200, max(0, _int("ai_chat_log_recent", 20)))
 #   ## 章节
 #   - [页面标题](https://example.com/doc.md): 页面说明
 AI_KNOWLEDGE_LLMS_TXT_URL: str = _text("ai_knowledge_llms_txt_url")
-# search_knowledge 最多返回多少条索引条目
-AI_KNOWLEDGE_TOP_K: int = max(1, _int("ai_knowledge_top_k", 5))
 AI_KNOWLEDGE_FETCH_TIMEOUT: float = max(
     1.0, _float("ai_knowledge_fetch_timeout", 15.0)
 )
 # 索引/页面内容的内存缓存秒数，0 表示不缓存
 AI_KNOWLEDGE_CACHE_TTL: int = max(0, _int("ai_knowledge_cache_ttl", 300))
-# fetch_url 允许抓取的 URL 正则（完整匹配）；为空表示只受 llms.txt 索引约束
+# fetch_doc 允许抓取的 URL 正则（完整匹配）；为空表示只受 llms.txt 索引约束
 AI_KNOWLEDGE_FETCH_URL_REGEX: str = _text("ai_knowledge_fetch_url_regex")
 
 # 群内不 @ 也参与聊天，回复走被动消息
@@ -301,7 +325,7 @@ def _valid_http_url(url: str) -> bool:
 def validate_agent_configs() -> list[str]:
     """检查可静态验证的 agent 配置；返回错误列表，空列表表示通过。
 
-    AI 开启时 router 与三个 agent 都参与链路，因此各方的 Key、端点、模型 id、
+    AI 开启时 router 与两个 agent 都参与链路，因此各方的 Key、端点、模型 id、
     系统提示词和 knowledge 的 llms.txt URL 都必须是可用配置，避免把
     配置错误拖到运行时才发现。
     """
@@ -330,9 +354,8 @@ def validate_agent_configs() -> list[str]:
     key_hints = {
         "chat": "AI_CHAT_API_KEY 或 AI_DEFAULT_API_KEY",
         "knowledge": "AI_KNOWLEDGE_API_KEY 或 AI_DEFAULT_API_KEY",
-        "invalid": "AI_CHAT_API_KEY 或 AI_DEFAULT_API_KEY",
     }
-    for model in (CHAT, KNOWLEDGE, INVALID):
+    for model in (CHAT, KNOWLEDGE):
         label = model.component
         if not model.api_key:
             problems.append(

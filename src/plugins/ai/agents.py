@@ -1,8 +1,7 @@
-"""三个 agent：普通聊天 / 知识库问答 / 无意义消息回应。
+"""两个 agent：普通聊天 / 知识库问答。
 
 每个 agent 拥有独立的模型配置、系统提示词和工具集；这里实现一个
-基于 openai SDK 的 Chat Completions 工具调用循环（agent loop）。invalid
-agent 不使用工具，只负责对 router 判为无意义的消息生成一句自然回应。
+基于 openai SDK 的 Chat Completions 工具调用循环（agent loop）。
 router 本身在 ``router.py``，通过 TypeSafe System One 分类。
 """
 
@@ -37,10 +36,8 @@ CHAT_AGENT = Agent(name="chat", model=config.CHAT, tools=CHAT_TOOLS)
 KNOWLEDGE_AGENT = Agent(
     name="knowledge", model=config.KNOWLEDGE, tools=KNOWLEDGE_TOOLS
 )
-INVALID_AGENT = Agent(name="invalid", model=config.INVALID, tools=())
 _AGENTS = {
-    agent.name: agent
-    for agent in (CHAT_AGENT, KNOWLEDGE_AGENT, INVALID_AGENT)
+    agent.name: agent for agent in (CHAT_AGENT, KNOWLEDGE_AGENT)
 }
 
 

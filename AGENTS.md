@@ -36,12 +36,12 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `src/plugins/lab_client/api.py` | 对后端机器人接口的 HTTP 封装（`ping` / `server-status` / `trigger-one-click-start`），路径直接拼在 `BACKEND_BASE_URL` 后。无鉴权，后端响应格式 `{"data": ...}` / `{"details": "..."}` |
 | `src/plugins/ai/__init__.py` | 群消息入口：聊天记录落库、AI 总开关、群 @ / 自动聊天、限流、全局互斥 |
 | `src/plugins/ai/config.py` | router（TypeSafe System One）/ chat / knowledge 配置，chat / knowledge 提示词与知识库 URL 加载 |
-| `src/plugins/ai/api.py` | OpenAI Chat Completions 客户端（官方 `openai` SDK，固定 openai-completions 格式），支持工具调用、用量日志（chat / knowledge / invalid 使用） |
+| `src/plugins/ai/api.py` | OpenAI Chat Completions 客户端（官方 `openai` SDK，固定 openai-completions 格式），支持工具调用、用量日志（chat / knowledge 使用） |
 | `src/plugins/ai/router.py` | TypeSafe System One 分类：`AsyncTypeSafeClient`、`Choice` 问题、置信度与用量日志、错误映射 |
-| `src/plugins/ai/agents.py` | 三个 agent 的简单 agent loop（工具调用、结果回填，轮数由模型自行结束） |
+| `src/plugins/ai/agents.py` | 两个 agent 的简单 agent loop（工具调用、结果回填，轮数由模型自行结束） |
 | `src/plugins/ai/tools.py` | 聊天工具（群聊记录检索、实时状态、时间）与知识库工具（llms.txt 检索、受限 fetch） |
 | `src/plugins/ai/workflow.py` | 工作流编排：router → agent |
-| `src/plugins/ai/chat_log.py` | 群聊聊天记录永久存储（SQLite `data/chat_log.db`），供上下文预置和 `search_chat_log` 检索 |
+| `src/plugins/ai/chat_log.py` | 群聊聊天记录永久存储（SQLite `data/chat_log.db`），供上下文预置和 `recall_chat` 检索 |
 | `src/plugins/http_api/` | 对外 HTTP 接口：`POST /bot/group-message` 向固定群发消息，`GET /bot/health` 探活；仅回环地址，随 NoneBot 的 FastAPI 驱动启动 |
 | `test_mock_client.py` | [已废弃] 旧版 OneBot v11 模拟客户端，迁移至 adapter-qq 后不再可用 |
 
@@ -56,17 +56,16 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `GROUP_OPENID` | 目标群 openid。首次收到群消息会自动记录并写入 `data/group_openid.txt`，重启后继续生效；也可手动填入固定使用 |
 | `QQ_BOTS` | JSON 数组，含 bot 的 `id`、`token`、`secret`、`intent` |
 | `AI_ENABLED` | 整个 AI 链路唯一开关，默认 `true`；`false` 时不调用任何模型，非指令消息回复「暂未启动AI」 |
-| `AI_DEFAULT_API_KEY` | chat / knowledge / invalid 未单独配置 `API_KEY` 时的默认 Key；router 不使用 |
-| `AI_DEFAULT_BASE_URL` | chat / knowledge / invalid 未单独配置 `BASE_URL` 时的默认端点（API 根地址，SDK 自动拼接 `/chat/completions`），默认 `https://api.deepseek.com` |
-| `AI_DEFAULT_MODEL` | chat / knowledge / invalid 未单独配置 `MODEL` 时的默认模型 id，默认 `deepseek-chat` |
-| `AI_DEFAULT_TEMPERATURE` | chat / knowledge / invalid 未单独配置温度时的默认值，默认 `1.0` |
-| `AI_DEFAULT_MAX_TOKENS` | chat / knowledge / invalid 未单独配置最大输出 token 时的默认值，默认 `800` |
-| `AI_DEFAULT_THINKING_EFFORT` | chat / knowledge / invalid 未单独配置思考强度时的默认值，默认 `low` |
-| `AI_DEFAULT_TIMEOUT` | chat / knowledge / invalid 未单独配置超时时的默认值，默认 `60` 秒 |
+| `AI_DEFAULT_API_KEY` | chat / knowledge 未单独配置 `API_KEY` 时的默认 Key；router 不使用 |
+| `AI_DEFAULT_BASE_URL` | chat / knowledge 未单独配置 `BASE_URL` 时的默认端点（API 根地址，SDK 自动拼接 `/chat/completions`），默认 `https://api.deepseek.com` |
+| `AI_DEFAULT_MODEL` | chat / knowledge 未单独配置 `MODEL` 时的默认模型 id，默认 `deepseek-chat` |
+| `AI_DEFAULT_TEMPERATURE` | chat / knowledge 未单独配置温度时的默认值，默认 `1.0` |
+| `AI_DEFAULT_MAX_TOKENS` | chat / knowledge 未单独配置最大输出 token 时的默认值，默认 `800` |
+| `AI_DEFAULT_THINKING_EFFORT` | chat / knowledge 未单独配置思考强度时的默认值，默认 `low` |
+| `AI_DEFAULT_TIMEOUT` | chat / knowledge 未单独配置超时时的默认值，默认 `60` 秒 |
 | `AI_ROUTER_*` | TypeSafe System One router：`AI_ROUTER_API_KEY` 必填；`BASE_URL` 默认 `https://api.typesafe.ai`，`MODEL` 默认 `jev-latest`；另有 `TIMEOUT`、`MAX_RETRIES`、`HISTORY_TURNS` |
 | `AI_CHAT_*` | 普通聊天 agent 配置，`AI_CHAT_API_KEY` 可回退 `AI_DEFAULT_API_KEY`；其余字段同上 |
-| `AI_INVALID_SYSTEM_PROMPT_FILE` | invalid agent 的提示词文件，默认 `prompts/invalid_prompt.md`；模型、端点、采样参数全部复用 chat 配置 |
-| `AI_KNOWLEDGE_*` | 知识库 agent：`AI_KNOWLEDGE_API_KEY` 可回退 `AI_DEFAULT_API_KEY`；其余模型字段同上，另有 `LLMS_TXT_URL`、`TOP_K`、`FETCH_TIMEOUT`、`CACHE_TTL`、`FETCH_URL_REGEX` |
+| `AI_KNOWLEDGE_*` | 知识库 agent：`AI_KNOWLEDGE_API_KEY` 可回退 `AI_DEFAULT_API_KEY`；其余模型字段同上，另有 `LLMS_TXT_URL`、`FETCH_TIMEOUT`、`CACHE_TTL`、`FETCH_URL_REGEX` |
 | `AI_CHAT_LOG_RECENT` | 群聊上下文预置的最近聊天记录条数，默认 20，最大 200 |
 | `AI_ROUTER_MAX_RETRIES` | router 的 SDK 自动重试次数（不含首次请求），默认 2，0 关闭 |
 | `AI_ROUTER_HISTORY_TURNS` | router 参考最近多少轮对话，默认 3 |
@@ -122,7 +121,7 @@ source .venv/bin/activate && python test_mock_client.py
 - `GROUP_OPENID` 首次为空是正常的：启动后在群里 @bot，从日志复制 openid 填入后重启即可
 - `.env`、`data/`、`.venv/` 均被 `.gitignore` 排除
 - router 依赖 `typesafe-sdk`（0.7.x，内部使用 `httpx2`）；它只负责 System One，不参与 openai-completions 调用
-- chat / knowledge / invalid 通过官方 `openai` SDK 调用，API 格式固定为 openai-completions；各 `AI_*_BASE_URL` 填 API 根地址（如 `https://api.deepseek.com` 或 `https://example.com/v1`），SDK 自动拼接 `/chat/completions`，旧配置写成完整端点时本模块会自动去掉该后缀
+- chat / knowledge 通过官方 `openai` SDK 调用，API 格式固定为 openai-completions；各 `AI_*_BASE_URL` 填 API 根地址（如 `https://api.deepseek.com` 或 `https://example.com/v1`），SDK 自动拼接 `/chat/completions`，旧配置写成完整端点时本模块会自动去掉该后缀
 - `httpx` 仍用于知识库的 llms.txt / 页面抓取，与 openai SDK 内部的 httpx 客户端互不共用
 - System One 的 `state` / `questions` 必须是 JSON 可序列化对象；最近对话直接复用 `chat_log.recent_messages()` 的 `{role, content}` 结构，role 为 `user` / `assistant`
 - 项目无 CI/CD，服务器上直接 `python bot.py` 配合 systemd 或 screen/tmux 运行
@@ -155,25 +154,23 @@ SEATIDE_ENV=prod python bot.py   # 生产
    └─ AI 开启 → router（TypeSafe System One）
                    │
                    ├─ chat      → chat agent      → 最终回复
-                   ├─ knowledge → knowledge agent → 最终回复
-                   └─ invalid   → invalid agent   → 创意回应（没看懂）
+                   └─ knowledge → knowledge agent → 最终回复
 ```
 
 - **指令优先**：斜杠消息不会进入 AI；未知指令由 `lab_client` 回复「指令不存在」。
-- **启动校验**：`AI_ENABLED=true` 时在启动阶段检查 router 的 API Key、BASE_URL、MODEL、timeout，以及 chat / knowledge / invalid 生效后的 API Key、BASE_URL、MODEL、系统提示词、temperature / timeout，还有 `AI_KNOWLEDGE_LLMS_TXT_URL` 是否存在且为 http(s) URL；启动时还会实际拉取一次 llms.txt，确认可访问且能解析出条目。任何一项不通过都会抛出 `RuntimeError`，直接阻止启动，不把配置错误留到运行时。
-- **router**：通过 `typesafe-sdk` 调用 TypeSafe System One（`POST /v1/systemone`），不再走 OpenAI 兼容接口。请求的 `state` 是 `{"recent_conversation": 最近 AI_ROUTER_HISTORY_TURNS 轮记录, "latest_message": 最新消息}`，`questions` 只有一个名为 `intent` 的 `Choice` 问题，criteria 固定为 `chat` / `knowledge` / `invalid`，不发送 `instructions` 或其他提示词。取 `response.choices["intent"].choice`，并校验必须严格等于三个 intent 之一（无别名、无兜底解析）；调用失败、答案类型不是 choice 或 intent 未知时直接报错，不切换到其他 agent。`invalid` 表示消息没有意义，交给无工具的 invalid agent 生成一句自然的「没看懂」回应。System One 没有 temperature / thinking effort / max_tokens，重试由 SDK `RetryPolicy` 负责。
-- **chat agent**：系统提示词默认 `prompts/chat_prompt.md`，工具为 `search_chat_log`、`get_server_status`、`get_current_time`。
-- **knowledge agent**：系统提示词默认 `prompts/knowledge_prompt.md`，工具为 `search_knowledge`、`fetch_url`、`get_server_status`。`search_knowledge` 拉取 `AI_KNOWLEDGE_LLMS_TXT_URL` 指向的 llms.txt 并检索条目；`fetch_url` 只允许抓取索引中出现过的 URL，返回 Markdown / 文本 / HTML 提取后的正文。
-- **invalid agent**：系统提示词默认 `prompts/invalid_prompt.md`，不挂任何工具；复用 chat 的 API Key、端点、模型 id 和采样参数，只单独加载提示词。用于对乱码、纯灌水等无意义消息生成一句不重复的随意回应；不要求认真追问，用户不认真时也可以跟着玩、敷衍或扯开话题。
-- **提示词文件**：chat / knowledge / invalid 各用一个独立的提示词文件，不再支持 `{{include}}` 共享片段。router 不使用提示词文件，System One 请求只发送 state 和 Choice 问题。
+- **启动校验**：`AI_ENABLED=true` 时在启动阶段检查 router 的 API Key、BASE_URL、MODEL、timeout，以及 chat / knowledge 生效后的 API Key、BASE_URL、MODEL、系统提示词、temperature / timeout，还有 `AI_KNOWLEDGE_LLMS_TXT_URL` 是否存在且为 http(s) URL；启动时还会实际拉取一次 llms.txt，确认可访问且能解析出条目。任何一项不通过都会抛出 `RuntimeError`，直接阻止启动，不把配置错误留到运行时。
+- **router**：通过 `typesafe-sdk` 调用 TypeSafe System One（`POST /v1/systemone`），不走 openai-completions。请求的 `state` 是 `{"recent_conversation": 最近 AI_ROUTER_HISTORY_TURNS 轮记录, "latest_message": 最新消息}`，`questions` 只有一个名为 `intent` 的 `Choice` 问题，criteria 固定为 `chat` / `knowledge`，不发送 `instructions` 或其他提示词。取 `response.choices["intent"].choice`，并校验必须严格等于两个 intent 之一（无别名、无兜底解析）；调用失败、答案类型不是 choice 或 intent 未知时直接报错，不切换到其他 agent。System One 没有 temperature / thinking effort / max_tokens，重试由 SDK `RetryPolicy` 负责。
+- **chat agent**：系统提示词默认 `prompts/chat_prompt.md`，工具只有 `recall_chat`。乱码、无意义内容等无法归入知识库的消息也由它处理。
+- **knowledge agent**：系统提示词默认 `prompts/knowledge_prompt.md`，工具为 `search_knowledge`、`fetch_doc`、`get_server_status`、`get_current_time`。`search_knowledge` 拉取 `AI_KNOWLEDGE_LLMS_TXT_URL` 指向的 llms.txt 并检索条目（不传 query 时返回全部条目，`limit` 控制最多返回条数，检索默认 5 条）；`fetch_doc` 只允许抓取索引中出现过的 URL，返回 Markdown / 文本 / HTML 提取后的正文。需要实时服务器状态或当前时间的场景也由 knowledge agent 负责。
+- **提示词文件**：chat / knowledge 各用一个独立的提示词文件，支持 `{{include: shared/xxx.md}}` 复用共享片段：路径相对当前提示词文件所在目录，支持嵌套，循环与最大 8 层嵌套会报错；展开失败会使系统提示词为空，由启动校验直接阻止启动。router 不使用提示词文件，System One 请求只发送 state 和 Choice 问题。
 - **agent loop**：工具结果原样写回模型，不截断；工具调用轮数不设上限，由模型自行决定何时给出最终回复。
-- **模型配置**：router 与 chat / knowledge 三套配置互相独立。router 只读取 `AI_ROUTER_*`：`AI_ROUTER_API_KEY` 必填，`BASE_URL` / `MODEL` 未配置时使用 `https://api.typesafe.ai` / `jev-latest`；超时和重试分别由 `AI_ROUTER_TIMEOUT` / `AI_ROUTER_MAX_RETRIES` 控制，不使用 `AI_DEFAULT_*`。chat / knowledge / invalid 固定通过官方 `openai` SDK 走 openai-completions 格式；它们的 API Key 未单独配置时回退到 `AI_DEFAULT_API_KEY`；端点、模型 id、temperature、thinking effort、max tokens、超时和系统提示词未配置时回退到 `AI_DEFAULT_*`。invalid agent 不单独配置模型，直接复用 chat 的端点和采样参数，仅 `AI_INVALID_SYSTEM_PROMPT_FILE` 可单独覆盖提示词。
-- **上下文**：只按群隔离，不按人隔离。所有群消息（含指令、未 @ 闲聊）落地到 `data/chat_log.db`；每次请求从该表预置最近 `AI_CHAT_LOG_RECENT` 条作为共享上下文。router 和三个 agent 共享同一份上下文，chat agent 可用 `search_chat_log` 按关键词、最近天数检索更早的记录。
+- **模型配置**：router 与 chat / knowledge 两套配置互相独立。router 只读取 `AI_ROUTER_*`：`AI_ROUTER_API_KEY` 必填，`BASE_URL` / `MODEL` 未配置时使用 `https://api.typesafe.ai` / `jev-latest`；超时和重试分别由 `AI_ROUTER_TIMEOUT` / `AI_ROUTER_MAX_RETRIES` 控制，不使用 `AI_DEFAULT_*`。chat / knowledge 固定通过官方 `openai` SDK 走 openai-completions 格式；它们的 API Key 未单独配置时回退到 `AI_DEFAULT_API_KEY`；端点、模型 id、temperature、thinking effort、max tokens、超时和系统提示词未配置时回退到 `AI_DEFAULT_*`。
+- **上下文**：只按群隔离，不按人隔离。所有群消息（含指令、未 @ 闲聊）落地到 `data/chat_log.db`；每次请求从该表预置最近 `AI_CHAT_LOG_RECENT` 条作为共享上下文。router 和两个 agent 共享同一份上下文，chat agent 可用 `recall_chat` 按关键词和时间范围（`Nd` / `Nh` / `Nm`，默认 `1h`）检索更早的记录；格式无法解析、或起点早于本群最早聊天记录时，工具会返回错误而不是静默调整范围，`0` 表示不限时间。
 - **并发与限流**：全局互斥，同一时间只跑一条 AI 链路；处理中收到的 @ 消息立即回复「上一条消息正在处理中，请稍后再问」，未 @ 的自动聊天消息直接跳过。开启 `AI_GROUP_CHAT_WITHOUT_AT` 后，未 @ 的群消息另按群每分钟限流，回复走被动消息。
 - **私聊**：暂不支持。私聊事件会被直接忽略，指令和 AI 都只处理群聊。
-- **日志**：每次路由以 INFO 记录 `AI 路由：chat/knowledge/invalid` 和 System One 的 `confidence`，DEBUG 记录三类概率；chat / knowledge / invalid 的每次模型调用记录 `LLM 用量[component/model]`（prompt / completion / 思考 token / 缓存命中），router 另行记录 prompt / completion token 用量。
+- **日志**：每次路由以 INFO 记录 `AI 路由：chat/knowledge` 和 System One 的 `confidence`，DEBUG 记录两类概率；chat / knowledge 的每次模型调用记录 `LLM 用量[component/model]`（prompt / completion / 思考 token / 缓存命中），router 另行记录 prompt / completion token 用量。
 - **知识库**：标准 llms.txt 索引（`# 标题`、`> 简介`、`## 章节`、`- [标题](URL): 说明`）；没有链接时把 llms.txt 自身当作可 fetch 的文档。索引与页面按 `AI_KNOWLEDGE_CACHE_TTL` 秒缓存，支持 Markdown、纯文本和 HTML，HTML 会去掉脚本/导航/页脚。
-- **抓取安全**：`fetch_url` 只允许抓取 llms.txt 索引中出现过的 URL，以及 http(s) 协议；配置 `AI_KNOWLEDGE_FETCH_URL_REGEX` 后，URL 还必须完整匹配该正则（作为额外白名单），留空则不额外限制。重定向逐跳校验协议和正则；若文档会 301 到其他域名，正则必须同时放行目标域名（例如 Seatide 文档从 `seatidemc.github.io` 301 到 `http://seatide.net`）。不再限制回环/内网地址。
+- **抓取安全**：`fetch_doc` 只允许抓取 llms.txt 索引中出现过的 URL，以及 http(s) 协议；配置 `AI_KNOWLEDGE_FETCH_URL_REGEX` 后，URL 还必须完整匹配该正则（作为额外白名单），留空则不额外限制。重定向逐跳校验协议和正则；若文档会 301 到其他域名，正则必须同时放行目标域名（例如 Seatide 文档从 `seatidemc.github.io` 301 到 `http://seatide.net`）。不再限制回环/内网地址。
 - 调用失败（超时 / 401 / 402 / 429 / router 失败 / System One 返回未知 intent）会把原因直接回复给用户，不进行 agent 切换。
 
 ## Windows 本地运行

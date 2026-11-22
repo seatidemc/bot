@@ -17,8 +17,7 @@ class WorkflowResult:
 async def run(text: str, history: list[dict[str, str]]) -> WorkflowResult:
     """路由并执行一次完整的 AI 对话。
 
-    chat / knowledge / invalid 都是真实 agent；invalid 没有工具，只负责
-    用日常语气表达“没看懂”，不再返回固定文案。
+    chat / knowledge 各自有独立的系统提示词、模型配置和工具集。
     """
     decision = await router.route(text, history)
     agent = agents.get_agent(decision.intent)

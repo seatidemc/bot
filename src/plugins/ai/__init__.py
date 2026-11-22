@@ -3,7 +3,7 @@
 整体结构：
 - / 开头的消息一律视为指令；未知指令由 lab_client 的兜底匹配器回复。
 - 非指令群消息进入本插件；AI 关闭时回复「暂未启动AI」。
-- AI 开启时先由 router 判断是普通聊天、知识库问答还是无效消息，再交给对应 agent。
+- AI 开启时先由 router 判断是普通聊天还是知识库问答，再交给对应 agent。
 - 只处理群聊；私聊消息直接忽略。
 - 群聊记录永久写入 data/chat_log.db，群内所有人共享同一份上下文。
 """
@@ -204,8 +204,7 @@ async def _on_startup():
         f"router={config.ROUTER.model}（System One，"
         f"{config.ROUTER.base_url}） "
         f"chat={config.CHAT.model} "
-        f"knowledge={config.KNOWLEDGE.model} "
-        f"invalid={config.INVALID.model}"
+        f"knowledge={config.KNOWLEDGE.model}"
     )
     logger.info(
         f"群聊记录：{chat_log.db_path()}，"

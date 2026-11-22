@@ -1,7 +1,7 @@
-"""router：调用 TypeSafe System One 把消息分成 chat / knowledge / invalid。
+"""router：调用 TypeSafe System One 把消息分成 chat / knowledge。
 
 System One 不是对话模型：输入一段 state 和若干结构化问题，返回带概率的
-分类答案。这里用一个 ``Choice`` 问题让模型在三个 agent 中选一个，最近
+分类答案。这里用一个 ``Choice`` 问题让模型在两个 agent 中选一个，最近
 对话和最新消息一起放进 state，用于理解指代和追问。
 """
 
@@ -32,21 +32,18 @@ from . import api, config
 
 # ─── 分类问题 ────────────────────────────────────────────────
 
-_INTENTS = ("chat", "knowledge", "invalid")
+_INTENTS = ("chat", "knowledge")
 
-# criteria 的 key 就是最终 intent；描述帮助模型区分三类消息
+# criteria 的 key 就是最终 intent；描述帮助模型区分两类消息
 _ROUTER_CRITERIA: dict[str, str] = {
     "chat": (
-        "日常闲聊、打招呼、情绪表达、与 Seatide 服务器无关的通用问题，"
-        "以及需要查询实时服务器状态的问题"
+        "日常闲聊、打招呼、情绪表达、与 Seatide 服务器无关的通用问题、"
+        "乱码或没有实际意义的内容"
     ),
     "knowledge": (
         "询问 Seatide 服务器的规则、玩法、插件、指令、公告、历史、"
-        "常见问题等，需要查阅知识库才能准确回答的问题"
-    ),
-    "invalid": (
-        "没有实际意义、不构成可回答的问题，例如乱码、重复符号或表情、"
-        "无上下文碎片、纯灌水"
+        "常见问题等，需要查阅知识库才能准确回答的问题，以及需要查询"
+        "实时服务器状态或当前时间的问题"
     ),
 }
 

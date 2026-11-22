@@ -2,7 +2,8 @@
 
 知识库采用 llms.txt + fetch 的形式：
 - ``search_knowledge`` 拉取并检索 llms.txt 索引，返回匹配条目的标题、URL 和说明；
-- ``fetch_url`` 只允许抓取索引中出现过的 URL，返回页面正文。
+  不传 query 时列出全部条目；
+- ``fetch_doc`` 只允许抓取索引中出现过的 URL，返回页面正文。
 """
 
 from __future__ import annotations
@@ -106,6 +107,41 @@ def _normalize_keywords(value: Any) -> list[str]:
     return terms[:8]
 
 
+# recall_chat 的时间范围：Nd / Nh / Nm，分别表示最近 N 天 / 小时 / 分钟
+_RECENT_RE = re.compile(r"^(\d+)\s*([dhm]?)$", re.IGNORECASE)
+_RECENT_UNIT_SECONDS = {"m": 60, "h": 3600, "d": 86400, "": 86400}
+_RECENT_UNIT_LABELS = {"m": "分钟", "h": "小时", "d": "天", "": "天"}
+_RECENT_DEFAULT = "1h"
+
+
+def _parse_recent(value: Any) -> tuple[float | None, str]:
+    """解析 Nd / Nh / Nm 时间范围，返回 (since 秒数, 展示文本)。
+
+    since 为 None 表示不限时间；格式无效时抛 ValueError。
+    未提供（None）时使用默认 1h；不带单位的纯数字按天处理，0 表示不限时间。
+    """
+    if value is None:
+        raw = _RECENT_DEFAULT
+    else:
+        raw = str(value).strip().lower().replace(" ", "")
+    match = _RECENT_RE.match(raw)
+    if not match:
+        raise ValueError(
+            f"无法解析 {value!r}，请使用 Nd / Nh / Nm 格式（如 30m、12h、7d）"
+        )
+
+    amount = int(match.group(1))
+    unit = match.group(2)
+    seconds = amount * _RECENT_UNIT_SECONDS[unit]
+    if seconds <= 0:
+        return None, "不限时间"
+    try:
+        seconds_value = float(seconds)
+    except OverflowError:
+        raise ValueError(f"时间范围过大：{amount}{unit or 'd'}") from None
+    return seconds_value, f"最近 {amount} {_RECENT_UNIT_LABELS[unit]}"
+
+
 def _log_speaker(entry: chat_log.ChatLogEntry) -> str:
     if entry.role == "bot":
         return "bot"
@@ -123,7 +159,7 @@ def _format_log_entry(entry: chat_log.ChatLogEntry) -> str:
 
 async def _search_chat_log(
     keywords: Any = None,
-    days: Any = 7,
+    recent: Any = _RECENT_DEFAULT,
     limit: Any = 50,
 ) -> str:
     group_openid = _CURRENT_GROUP.get()
@@ -132,18 +168,34 @@ async def _search_chat_log(
 
     terms = _normalize_keywords(keywords)
     try:
-        days_value = int(days)
-    except (TypeError, ValueError):
-        days_value = 7
-    days_value = max(0, min(days_value, 365))
+        seconds, scope = _parse_recent(recent)
+    except ValueError as e:
+        return f"时间范围无效：{e}。"
     try:
         limit_value = int(limit)
     except (TypeError, ValueError):
         limit_value = 50
     limit_value = max(1, min(limit_value, 200))
 
-    since = None if days_value == 0 else time.time() - days_value * 86400
-    scope = "不限时间" if days_value == 0 else f"最近 {days_value} 天"
+    if seconds is None:
+        since = None
+    else:
+        try:
+            earliest = await chat_log.earliest_timestamp(group_openid)
+        except Exception as e:
+            logger.warning(f"群聊记录检索失败: {e}")
+            return f"群聊记录检索失败：{e.__class__.__name__}"
+        if earliest is None:
+            return "本群还没有聊天记录，无法按时间范围检索。"
+        since = time.time() - seconds
+        if since < earliest:
+            earliest_text = datetime.fromtimestamp(earliest).strftime(
+                "%Y-%m-%d %H:%M"
+            )
+            return (
+                f"时间范围无效：{scope}的起点早于本群最早聊天记录"
+                f"（{earliest_text}）。请缩短 recent，或传 0 查询全部记录。"
+            )
     keyword_text = "、".join(terms) if terms else "无"
 
     try:
@@ -160,7 +212,7 @@ async def _search_chat_log(
     if not entries:
         return (
             f"没有找到群聊记录（{scope}，关键词：{keyword_text}）。"
-            "可以换更短的关键词、去掉部分关键词，或扩大天数再试。"
+            "可以换更短的关键词、去掉部分关键词，或传 0 查询全部记录。"
         )
 
     body = "\n".join(_format_log_entry(entry) for entry in entries)
@@ -362,7 +414,8 @@ def _ensure_fetch_url_allowed(url: str) -> None:
 
 
 class _HTMLTextExtractor(HTMLParser):
-    _SKIP_TAGS = {"script", "style", "noscript", "svg", "nav", "footer", "aside"}
+    _SKIP_TAGS = {"script", "style", "noscript",
+                  "svg", "nav", "footer", "aside"}
     _BLOCK_TAGS = {
         "p",
         "div",
@@ -483,7 +536,8 @@ async def _fetch_document(
                         current = urljoin(current, location)
                         continue
                     if resp.status_code >= 400:
-                        raise KnowledgeError(f"HTTP {resp.status_code}：{current}")
+                        raise KnowledgeError(
+                            f"HTTP {resp.status_code}：{current}")
 
                     content_type = (
                         (resp.headers.get("content-type") or "")
@@ -513,25 +567,25 @@ async def _get_index() -> KnowledgeIndex:
 
     ttl = config.AI_KNOWLEDGE_CACHE_TTL
     now = time.monotonic()
-    cached = _INDEX_CACHE[1] if _INDEX_CACHE else None
+    cached = _INDEX_CACHE
     if (
         cached is not None
-        and cached.source_url == url
+        and cached[1].source_url == url
         and ttl > 0
-        and now - _INDEX_CACHE[0] < ttl
+        and now - cached[0] < ttl
     ):
-        return cached
+        return cached[1]
 
     async with _INDEX_LOCK:
         now = time.monotonic()
-        cached = _INDEX_CACHE[1] if _INDEX_CACHE else None
+        cached = _INDEX_CACHE
         if (
             cached is not None
-            and cached.source_url == url
+            and cached[1].source_url == url
             and ttl > 0
-            and now - _INDEX_CACHE[0] < ttl
+            and now - cached[0] < ttl
         ):
-            return cached
+            return cached[1]
 
         text, final_url = await _fetch_document(
             url,
@@ -597,7 +651,7 @@ def _query_terms(query: str) -> set[str]:
         if len(run) == 1:
             terms.add(run)
         for i in range(len(run) - 1):
-            terms.add(run[i : i + 2])
+            terms.add(run[i: i + 2])
 
     if 2 <= len(text) <= 40:
         terms.add(text)
@@ -644,10 +698,50 @@ def _format_entry(index: int, entry: KnowledgeEntry) -> str:
     return "\n".join(lines)
 
 
-async def _search_knowledge(query: str) -> str:
+_DEFAULT_SEARCH_LIMIT = 5
+
+
+def _normalize_limit(value: object) -> int | None:
+    """把 search_knowledge 的 limit 参数转成正整数。
+
+    未提供（None / 空字符串）返回 None；非法值抛出 ValueError。
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        try:
+            parsed = int(raw)
+        except ValueError:
+            raise ValueError from None
+    elif isinstance(value, int):
+        parsed = value
+    elif isinstance(value, float):
+        if not value.is_integer():
+            raise ValueError
+        parsed = int(value)
+    else:
+        raise ValueError
+    if parsed < 1:
+        raise ValueError
+    return parsed
+
+
+async def _search_knowledge(
+    query: str | None = None, limit: int | None = None
+) -> str:
     query = str(query or "").strip()
-    if not query:
-        return "检索问题为空，请提供更具体的关键词。"
+    try:
+        cap = _normalize_limit(limit)
+    except ValueError:
+        return (
+            f"limit 参数无效：{limit!r} 不是大于 0 的整数。"
+            "请传正整数，或省略 limit 使用默认值。"
+        )
 
     try:
         index = await _get_index()
@@ -660,8 +754,26 @@ async def _search_knowledge(query: str) -> str:
     if not index.entries:
         return "知识库索引为空，请告知用户暂时无法查询知识库，并建议询问服主。"
 
+    # 不传 query 时列出条目：默认返回全部（当前知识库页面不多），
+    # 传了 limit 则只截取前 limit 条。
+    if not query:
+        entries = index.entries if cap is None else index.entries[:cap]
+        body = "\n\n".join(
+            _format_entry(i + 1, entry)
+            for i, entry in enumerate(entries)
+        )
+        scope = (
+            f"全部 {len(index.entries)} 条"
+            if len(entries) >= len(index.entries)
+            else f"前 {len(entries)} 条，共 {len(index.entries)} 条"
+        )
+        return (
+            f"知识库条目（{scope}，来自 {index.url}）：\n{body}\n\n"
+            "如需正文，请用 fetch_doc 抓取上面的 URL。"
+        )
+
     matches = _search_entries(
-        index.entries, query, config.AI_KNOWLEDGE_TOP_K
+        index.entries, query, cap or _DEFAULT_SEARCH_LIMIT
     )
     if not matches:
         available = "\n".join(
@@ -680,11 +792,11 @@ async def _search_knowledge(query: str) -> str:
     )
     return (
         f"知识库索引匹配结果（来自 {index.url}）：\n{body}\n\n"
-        "如需正文，请用 fetch_url 抓取上面的 URL。"
+        "如需正文，请用 fetch_doc 抓取上面的 URL。"
     )
 
 
-async def _fetch_url(url: str) -> str:
+async def _fetch_doc(url: str) -> str:
     raw = str(url or "").strip()
     if not raw:
         return "URL 为空。"
@@ -739,12 +851,10 @@ GET_CURRENT_TIME = Tool(
     handler=_get_current_time,
 )
 
-SEARCH_CHAT_LOG = Tool(
-    name="search_chat_log",
+RECALL_CHAT = Tool(
+    name="recall_chat",
     description=(
-        "检索本群永久保存的聊天记录，用于回答“之前谁说过……”"
-        "“昨天群里聊了什么”这类需要回忆群聊内容的问题。"
-        "可以只按时间检索，也可以叠加关键词。"
+        "按关键词检索本群存量聊天记录"
     ),
     parameters={
         "type": "object",
@@ -757,10 +867,12 @@ SEARCH_CHAT_LOG = Tool(
                     "中文建议用 2-4 字的短词。不传则只按时间检索。"
                 ),
             },
-            "days": {
-                "type": "integer",
+            "recent": {
+                "type": "string",
                 "description": (
-                    "检索最近多少天，默认 7；0 表示不限时间，最大 365"
+                    "时间范围，格式为 Nd / Nh / Nm，分别表示最近 N 天 / "
+                    "小时 / 分钟，默认 1h；传 0 表示不限时间。"
+                    "范围早于本群最早聊天记录时会报错"
                 ),
             },
             "limit": {
@@ -775,52 +887,56 @@ SEARCH_CHAT_LOG = Tool(
 SEARCH_KNOWLEDGE = Tool(
     name="search_knowledge",
     description=(
-        "检索 Seatide 知识库的 llms.txt 索引，返回匹配文档的标题、URL 和说明。"
-        "回答服务器规则、玩法、插件、指令、公告、历史等问题前应先调用本工具，"
-        "拿到 URL 后再用 fetch_url 抓取正文。"
+        "检索服务器知识库索引，返回知识库项目链接；"
+        "不传 query 时列出全部条目"
     ),
     parameters={
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
-                "description": "要检索的关键词或完整问题",
-            }
+                "description": (
+                    "要检索的关键词或完整问题；"
+                    "不填则返回知识库全部条目"
+                ),
+            },
+            "limit": {
+                "type": "integer",
+                "description": (
+                    "最多返回多少条，必须是大于 0 的整数；"
+                    "按关键词检索时默认 5，不传 query 时默认返回全部"
+                ),
+            },
         },
-        "required": ["query"],
     },
     handler=_search_knowledge,
 )
 
-FETCH_URL = Tool(
-    name="fetch_url",
+FETCH_DOC = Tool(
+    name="fetch_doc",
     description=(
-        "抓取知识库页面正文。url 必须是 search_knowledge 返回的 llms.txt "
-        "条目 URL，并且要符合服务端配置的抓取白名单；不允许抓取任意网址。"
+        "获取知识库链接对应正文"
     ),
     parameters={
         "type": "object",
         "properties": {
             "url": {
                 "type": "string",
-                "description": "search_knowledge 返回的文档 URL",
+                "description": "完整知识库文档 URL",
             }
         },
         "required": ["url"],
     },
-    handler=_fetch_url,
+    handler=_fetch_doc,
 )
 
-# 普通聊天 agent 可以查实时状态、时间和群聊记录
-CHAT_TOOLS: tuple[Tool, ...] = (
-    SEARCH_CHAT_LOG,
-    GET_SERVER_STATUS,
-    GET_CURRENT_TIME,
-)
+# 普通聊天 agent 只负责回忆群聊记录；实时状态、当前时间交给 knowledge
+CHAT_TOOLS: tuple[Tool, ...] = (RECALL_CHAT,)
 
-# 知识库问答 agent：检索 llms.txt → fetch 正文，也可以查实时状态
+# 知识库问答 agent：检索 llms.txt → fetch 正文，也负责实时状态和当前时间
 KNOWLEDGE_TOOLS: tuple[Tool, ...] = (
     SEARCH_KNOWLEDGE,
-    FETCH_URL,
+    FETCH_DOC,
     GET_SERVER_STATUS,
+    GET_CURRENT_TIME,
 )

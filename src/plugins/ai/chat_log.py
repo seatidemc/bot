@@ -4,7 +4,7 @@
 的回复构成同一份上下文。消息只增不删，用于：
 
 - 每次请求时预置最近的聊天内容；
-- chat agent 通过 ``search_chat_log`` 工具检索更早的记录。
+- chat agent 通过 ``recall_chat`` 工具检索更早的记录。
 
 数据库固定放在 ``data/chat_log.db``，随 ``data/`` 一起被 .gitignore 排除。
 """
@@ -173,6 +173,22 @@ async def recent_messages(
 
 def _escape_like(term: str) -> str:
     return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+async def earliest_timestamp(group_openid: str) -> float | None:
+    """返回该群最早一条聊天记录的时间戳；没有记录时返回 None。"""
+
+    def op(conn: sqlite3.Connection) -> float | None:
+        row = conn.execute(
+            "SELECT MIN(created_at) AS earliest FROM chat_log "
+            "WHERE group_openid = ?",
+            (group_openid,),
+        ).fetchone()
+        if row is None or row["earliest"] is None:
+            return None
+        return float(row["earliest"])
+
+    return await _run(op)
 
 
 async def search(
