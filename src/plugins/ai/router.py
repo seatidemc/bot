@@ -28,6 +28,7 @@ from typesafe_sdk import (
     TypeSafeRateLimitError,
 )
 
+from ..lab_client import is_command_text
 from . import api, config
 
 # ─── 分类问题 ────────────────────────────────────────────────
@@ -136,8 +137,29 @@ def _llm_error(exc: Exception) -> api.LLMError:
 def _build_state(
     text: str, history: list[dict[str, str]]
 ) -> dict[str, Any]:
-    limit = config.ROUTER.history_turns * 2
-    recent = history[-limit:] if limit > 0 and history else []
+    """构造 System One 的 state。
+
+    System One 对整个 state 打分，而不是只判断 ``latest_message``。bot 自己
+    的回复（尤其是 knowledge agent 的长回答）会让「你好」「？」这类短消息
+    被判成 knowledge，所以 router 只看最近的用户消息，并跳过斜杠指令：
+    指令本身不进入 AI，却可能带着 ``/状态`` 这样的知识型关键词。
+
+    保留最近 ``AI_ROUTER_HISTORY_TURNS`` 条用户消息仅用于理解追问和指代；
+    再多会被无关闲聊稀释。
+    """
+    limit = config.ROUTER.history_turns
+    if limit <= 0:
+        recent: list[dict[str, str]] = []
+    else:
+        recent = [
+            {
+                "role": "user",
+                "content": str(message.get("content", "")),
+            }
+            for message in history
+            if message.get("role") == "user"
+            and not is_command_text(str(message.get("content", "")))
+        ][-limit:]
     return {
         "recent_conversation": recent,
         "latest_message": text,
@@ -184,21 +206,41 @@ async def route(
             model=config.ROUTER.model,
         )
 
-    intent = answer.choice
-    if intent not in _INTENTS:
+    raw_intent = answer.choice
+    if raw_intent not in _INTENTS:
         raise api.LLMError(
-            f"router 返回未知 intent：{intent!r}",
+            f"router 返回未知 intent：{raw_intent!r}",
             component="router",
             model=config.ROUTER.model,
         )
 
     confidence = answer.confidence
+    probabilities = dict(answer.probabilities or {})
+
+    # knowledge 概率不足时按 chat 处理。这里不看 confidence：System One
+    # 对 knowledge 的 confidence 普遍偏低（概率 0.70 时也只有 0.40 左右），
+    # 用它当门槛会把正常知识问题也挡掉。门槛可配，0 表示不启用。
+    intent = raw_intent
+    override = ""
+    threshold = config.ROUTER.min_knowledge_probability
+    knowledge_prob = probabilities.get("knowledge")
+    if (
+        intent == "knowledge"
+        and threshold > 0
+        and knowledge_prob is not None
+        and knowledge_prob < threshold
+    ):
+        intent = "chat"
+        override = (
+            f"，knowledge 概率 {knowledge_prob:.2f} 低于门槛 "
+            f"{threshold:.2f}，按 chat 处理"
+        )
+
     reason = (
         f"confidence={confidence:.2f}"
         if confidence is not None
         else ""
     )
-    probabilities = dict(answer.probabilities or {})
     distribution = "，".join(
         f"{name}={value:.2f}"
         for name, value in sorted(
@@ -208,13 +250,14 @@ async def route(
     logger.info(
         f"AI 路由：{intent}"
         + (f"（{reason}）" if reason else "")
+        + override
         + (f"，概率 {distribution}" if distribution else "")
     )
     if probabilities:
         top = max(probabilities, key=probabilities.__getitem__)
-        if top != intent:
+        if top != raw_intent:
             logger.warning(
-                f"router 返回的 choice={intent} 不是概率最高项（{top}），"
+                f"router 返回的 choice={raw_intent} 不是概率最高项（{top}），"
                 f"概率 {distribution}"
             )
     return RouteDecision(

@@ -37,7 +37,7 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `src/plugins/ai/__init__.py` | 群消息入口：聊天记录落库、AI 总开关、群 @ / 自动聊天、限流、全局互斥 |
 | `src/plugins/ai/config.py` | router（TypeSafe System One）/ chat / knowledge 配置，chat / knowledge 提示词与知识库 URL 加载 |
 | `src/plugins/ai/api.py` | OpenAI Chat Completions 客户端（官方 `openai` SDK，固定 openai-completions 格式），支持工具调用、用量日志（chat / knowledge 使用） |
-| `src/plugins/ai/router.py` | TypeSafe System One 分类：`AsyncTypeSafeClient`、`Choice` 问题、置信度与用量日志、错误映射 |
+| `src/plugins/ai/router.py` | TypeSafe System One 分类：`AsyncTypeSafeClient`、`Choice` 问题、knowledge 概率门槛、用量日志、错误映射 |
 | `src/plugins/ai/agents.py` | 两个 agent 的简单 agent loop（工具调用、结果回填，轮数由模型自行结束） |
 | `src/plugins/ai/tools.py` | 聊天工具（群聊记录检索、实时状态、时间）与知识库工具（llms.txt 检索、受限 fetch） |
 | `src/plugins/ai/workflow.py` | 工作流编排：router → agent |
@@ -63,13 +63,14 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `AI_DEFAULT_MAX_TOKENS` | chat / knowledge 未单独配置最大输出 token 时的默认值，默认 `800` |
 | `AI_DEFAULT_THINKING_EFFORT` | chat / knowledge 未单独配置思考强度时的默认值，默认 `low` |
 | `AI_DEFAULT_TIMEOUT` | chat / knowledge 未单独配置超时时的默认值，默认 `60` 秒 |
-| `AI_ROUTER_*` | TypeSafe System One router：`AI_ROUTER_API_KEY` 必填；`BASE_URL` 默认 `https://api.typesafe.ai`，用阿里云百炼时填 `https://{WorkspaceId}.{region}.maas.aliyuncs.com/compatible-mode`；`MODEL` 默认 `jev-latest`（百炼填 `decision-model-preview`）；另有 `TIMEOUT`、`MAX_RETRIES`、`HISTORY_TURNS` |
+| `AI_ROUTER_*` | TypeSafe System One router：`AI_ROUTER_API_KEY` 必填；`BASE_URL` 默认 `https://api.typesafe.ai`，用阿里云百炼时填 `https://{WorkspaceId}.{region}.maas.aliyuncs.com/compatible-mode`；`MODEL` 默认 `jev-latest`（百炼填 `decision-model-preview`）；另有 `TIMEOUT`、`MAX_RETRIES`、`HISTORY_TURNS`、`MIN_KNOWLEDGE_PROBABILITY` |
 | `AI_CHAT_*` | 普通聊天 agent 配置，`AI_CHAT_API_KEY` 可回退 `AI_DEFAULT_API_KEY`；其余字段同上 |
 | `AI_KNOWLEDGE_*` | 知识库 agent：`AI_KNOWLEDGE_API_KEY` 可回退 `AI_DEFAULT_API_KEY`；其余模型字段同上，另有 `LLMS_TXT_URL`、`FETCH_TIMEOUT`、`CACHE_TTL`、`FETCH_URL_REGEX` |
 | `AI_CHAT_LOG_RECENT` | 群聊上下文预置的最近聊天记录条数，默认 20，最大 200 |
 | `AI_CHAT_LOG_WINDOW_MINUTES` | 群聊上下文只取最近多少分钟内的记录，默认 30；`0` 表示不限时间 |
 | `AI_ROUTER_MAX_RETRIES` | router 的 SDK 自动重试次数（不含首次请求），默认 2，0 关闭 |
-| `AI_ROUTER_HISTORY_TURNS` | router 参考最近多少轮对话，默认 3 |
+| `AI_ROUTER_HISTORY_TURNS` | router 参考最近多少条用户消息，默认 3；自动跳过 bot 回复和斜杠指令 |
+| `AI_ROUTER_MIN_KNOWLEDGE_PROBABILITY` | knowledge 概率低于该值时按 chat 处理，默认 0.6，取值 0~1；0 表示不启用 |
 | `AI_GROUP_CHAT_WITHOUT_AT` | 群内不 @ 是否参与聊天，默认 false |
 | `AI_GROUP_CHAT_PER_MINUTE` | 每个群每分钟自动聊天回复上限，默认 5 |
 | `HOST` / `PORT` | HTTP 服务监听地址，默认 `127.0.0.1:8081`，建议只监听本机 |
@@ -161,14 +162,14 @@ SEATIDE_ENV=prod python bot.py   # 生产
 ```
 
 - **指令优先**：斜杠消息不会进入 AI；未知指令由 `lab_client` 回复「指令不存在」。
-- **启动校验**：`AI_ENABLED=true` 时在启动阶段检查 router 的 API Key、BASE_URL、MODEL、timeout，以及 chat / knowledge 生效后的 API Key、BASE_URL、MODEL、系统提示词、temperature / timeout，还有 `AI_KNOWLEDGE_LLMS_TXT_URL` 是否存在且为 http(s) URL；启动时还会实际拉取一次 llms.txt，确认可访问且能解析出条目。任何一项不通过都会抛出 `RuntimeError`，直接阻止启动，不把配置错误留到运行时。
-- **router**：通过 `typesafe-sdk` 调用 TypeSafe System One（`POST /v1/systemone`），不走 openai-completions。请求的 `state` 是 `{"recent_conversation": 最近 AI_ROUTER_HISTORY_TURNS 轮记录, "latest_message": 最新消息}`，`questions` 只有一个名为 `intent` 的 `Choice` 问题，criteria 固定为 `chat` / `knowledge`，不发送 `instructions` 或其他提示词。取 `response.choices["intent"].choice`，并校验必须严格等于两个 intent 之一（无别名、无兜底解析）；调用失败、答案类型不是 choice 或 intent 未知时直接报错，不切换到其他 agent。System One 没有 temperature / thinking effort / max_tokens，重试由 SDK `RetryPolicy` 负责。
+- **启动校验**：`AI_ENABLED=true` 时在启动阶段检查 router 的 API Key、BASE_URL、MODEL、timeout、knowledge 概率门槛，以及 chat / knowledge 生效后的 API Key、BASE_URL、MODEL、系统提示词、temperature / timeout，还有 `AI_KNOWLEDGE_LLMS_TXT_URL` 是否存在且为 http(s) URL；启动时还会实际拉取一次 llms.txt，确认可访问且能解析出条目。任何一项不通过都会抛出 `RuntimeError`，直接阻止启动，不把配置错误留到运行时。
+- **router**：通过 `typesafe-sdk` 调用 TypeSafe System One（`POST /v1/systemone`），不走 openai-completions。请求的 `state` 是 `{"recent_conversation": 最近 AI_ROUTER_HISTORY_TURNS 条用户消息（自动跳过 bot 回复和斜杠指令）, "latest_message": 最新消息}`，`questions` 只有一个名为 `intent` 的 `Choice` 问题，criteria 固定为 `chat` / `knowledge`，不发送 `instructions` 或其他提示词。取 `response.choices["intent"].choice`，并校验必须严格等于两个 intent 之一（无别名、无兜底解析）；若 choice 为 `knowledge` 且 `knowledge` 概率低于 `AI_ROUTER_MIN_KNOWLEDGE_PROBABILITY`（默认 0.6，0 表示不启用），按 `chat` 处理；调用失败、答案类型不是 choice 或 intent 未知时直接报错，不切换到其他 agent。System One 没有 temperature / thinking effort / max_tokens，重试由 SDK `RetryPolicy` 负责。
 - **chat agent**：系统提示词默认 `prompts/chat_prompt.md`，工具只有 `recall_chat`。乱码、无意义内容等无法归入知识库的消息也由它处理。
 - **knowledge agent**：系统提示词默认 `prompts/knowledge_prompt.md`，工具为 `search_knowledge`、`fetch_doc`、`get_server_status`、`get_current_time`。`search_knowledge` 拉取 `AI_KNOWLEDGE_LLMS_TXT_URL` 指向的 llms.txt 并检索条目（不传 query 时返回全部条目，`limit` 控制最多返回条数，检索默认 5 条）；`fetch_doc` 只允许抓取索引中出现过的 URL，返回 Markdown / 文本 / HTML 提取后的正文。需要实时服务器状态或当前时间的场景也由 knowledge agent 负责。
 - **提示词文件**：chat / knowledge 各用一个独立的提示词文件，支持 `{{include: shared/xxx.md}}` 复用共享片段：路径相对当前提示词文件所在目录，支持嵌套，循环与最大 8 层嵌套会报错；展开失败会使系统提示词为空，由启动校验直接阻止启动。router 不使用提示词文件，System One 请求只发送 state 和 Choice 问题。
 - **agent loop**：工具结果原样写回模型，不截断；工具调用轮数不设上限，由模型自行决定何时给出最终回复。
 - **模型配置**：router 与 chat / knowledge 两套配置互相独立。router 只读取 `AI_ROUTER_*`：`AI_ROUTER_API_KEY` 必填，`BASE_URL` / `MODEL` 未配置时使用 `https://api.typesafe.ai` / `jev-latest`；超时和重试分别由 `AI_ROUTER_TIMEOUT` / `AI_ROUTER_MAX_RETRIES` 控制，不使用 `AI_DEFAULT_*`。chat / knowledge 固定通过官方 `openai` SDK 走 openai-completions 格式；它们的 API Key 未单独配置时回退到 `AI_DEFAULT_API_KEY`；端点、模型 id、temperature、thinking effort、max tokens、超时和系统提示词未配置时回退到 `AI_DEFAULT_*`。
-- **上下文**：只按群隔离，不按人隔离。所有群消息（含指令、未 @ 闲聊）落地到 `data/chat_log.db`；每次请求从该表预置最近 `AI_CHAT_LOG_RECENT` 条、且不早于 `AI_CHAT_LOG_WINDOW_MINUTES` 分钟前的记录作为共享上下文，并以 INFO 记录实际预置条数。router 和两个 agent 共享同一份上下文，chat agent 可用 `recall_chat` 按关键词和时间范围（`Nd` / `Nh` / `Nm`，默认 `1h`）检索更早的记录；格式无法解析、或起点早于本群最早聊天记录时，工具会返回错误而不是静默调整范围，`0` 表示不限时间。
+- **上下文**：只按群隔离，不按人隔离。所有群消息（含指令、未 @ 闲聊）落地到 `data/chat_log.db`；每次请求从该表预置最近 `AI_CHAT_LOG_RECENT` 条、且不早于 `AI_CHAT_LOG_WINDOW_MINUTES` 分钟前的记录作为共享上下文，并以 INFO 记录实际预置条数。router 只从中取最近 `AI_ROUTER_HISTORY_TURNS` 条用户消息（跳过 bot 回复和斜杠指令）用于分类，两个 agent 使用完整上下文；chat agent 可用 `recall_chat` 按关键词和时间范围（`Nd` / `Nh` / `Nm`，默认 `1h`）检索更早的记录；格式无法解析、或起点早于本群最早聊天记录时，工具会返回错误而不是静默调整范围，`0` 表示不限时间。
 - **并发与限流**：全局互斥，同一时间只跑一条 AI 链路；处理中收到的 @ 消息立即回复「上一条消息正在处理中，请稍后再问」，未 @ 的自动聊天消息直接跳过。开启 `AI_GROUP_CHAT_WITHOUT_AT` 后，未 @ 的群消息另按群每分钟限流，回复走被动消息。
 - **私聊**：暂不支持。私聊事件会被直接忽略，指令和 AI 都只处理群聊。
 - **日志**：每次路由以 INFO 记录 `AI 路由：chat/knowledge`、System One 的 `confidence` 和两类概率（按概率降序），若返回的 choice 不是概率最高项则追加 WARNING；chat / knowledge 的每次模型调用记录 `LLM 用量[component/model]`（prompt / completion / 思考 token / 缓存命中），router 另行记录 prompt / completion token 用量；每次工具调用以 INFO 记录工具名和传入参数，不记录工具返回。

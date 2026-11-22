@@ -193,7 +193,10 @@ class RouterConfig:
     model: str
     timeout: float
     max_retries: int
+    # router state 中保留的用户消息条数（跳过 bot 回复与斜杠指令）
     history_turns: int
+    # knowledge 概率低于该值时改判 chat；0 表示不启用
+    min_knowledge_probability: float
 
 
 # AI_DEFAULT_* 是 chat / knowledge 共用的 fallback 值（router 不用）
@@ -250,7 +253,13 @@ ROUTER: RouterConfig = RouterConfig(
     model=_text("ai_router_model") or "jev-latest",
     timeout=_float("ai_router_timeout", 20.0),
     max_retries=max(0, _int("ai_router_max_retries", 2)),
+    # 语义是"最近多少条用户消息"，不是对话轮数；router 会跳过 bot 回复
+    # 和斜杠指令，只用来理解追问和指代。
     history_turns=max(0, _int("ai_router_history_turns", 3)),
+    # knowledge 概率门槛：低于该值按 chat 处理，0 表示不启用
+    min_knowledge_probability=_float(
+        "ai_router_min_knowledge_probability", 0.6
+    ),
 )
 
 _KNOWLEDGE_PROMPT_FILE = _text(
@@ -368,6 +377,11 @@ def validate_agent_configs() -> list[str]:
     if ROUTER.timeout <= 0:
         problems.append(
             f"router: TIMEOUT 必须大于 0，当前为 {ROUTER.timeout}"
+        )
+    if not (0.0 <= ROUTER.min_knowledge_probability <= 1.0):
+        problems.append(
+            "router: MIN_KNOWLEDGE_PROBABILITY 必须在 0~1 之间，"
+            f"当前为 {ROUTER.min_knowledge_probability}"
         )
 
     key_hints = {
