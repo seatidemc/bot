@@ -51,7 +51,7 @@ class RouteDecision:
     reason: str = ""
 
 
-_INTENTS = ("chat", "knowledge")
+_INTENTS = ("chat", "knowledge", "invalid")
 
 
 def _parse_route(content: str) -> RouteDecision:

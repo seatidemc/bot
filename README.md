@@ -186,8 +186,8 @@ QQ_BOTS='[
 
 1. 以 `/` 或 `／` 开头 → 指令；已知指令执行对应命令，未知指令回复「指令不存在」。
 2. 非指令消息 → 进入 AI。AI 关闭（`AI_ENABLED=false`）时回复「暂未启动AI」。
-3. AI 开启 → router 模型判断是普通聊天还是知识库问答。
-4. 普通聊天交给 chat agent，知识库问答交给 knowledge agent；各自有独立的系统提示词、模型配置和工具集。
+3. AI 开启 → router 模型判断是普通聊天、知识库问答，还是无效消息。
+4. 普通聊天交给 chat agent，知识库问答交给 knowledge agent；各自有独立的系统提示词、模型配置和工具集。无效消息（乱码、无意义内容等）不进入任何 agent，直接回复「似乎这并不是个问题哦，有问题的时候再来找我吧」。
 5. agent 可调用工具（群聊记录检索、实时服务器状态、当前时间、知识库检索），由模型自行决定何时结束工具调用并给出最终回复。
 
 补充说明：
@@ -197,7 +197,7 @@ QQ_BOTS='[
 - 全局互斥：同一时间只跑一条 AI 链路。处理中收到的 @ 消息会立即回复「上一条消息正在处理中，请稍后再问」，未 @ 的自动聊天消息直接跳过。
 - 启动校验：`AI_ENABLED=true` 时会检查三个模型生效后的 API Key、BASE_URL、MODEL、系统提示词、temperature / timeout，以及 `AI_KNOWLEDGE_LLMS_TXT_URL`；启动时还会实际拉取一次 llms.txt，确认可访问且能解析出条目。任何一项失败都会直接阻止启动，不会留到运行时降级。
 - router 调用失败或输出无法解析时，直接回复 AI 不可用错误，不切换到其他 agent。
-- 每次路由以 INFO 记录 `AI 路由：chat/knowledge`；每次模型调用记录 `LLM 用量[component/model]`：prompt / completion / 思考 token / 缓存命中情况，便于观察成本构成。
+- 每次路由以 INFO 记录 `AI 路由：chat/knowledge/invalid`；每次模型调用记录 `LLM 用量[component/model]`：prompt / completion / 思考 token / 缓存命中情况，便于观察成本构成。
 - 三个模型的 API Key 可以分别配置；未配置时回退到 `AI_DEFAULT_API_KEY`（三个 agent 共用同一 Key 时只需填这一项）。端点、模型 id、temperature、thinking effort、max tokens、超时和提示词也可以分别配置，未配置时回退到 `AI_DEFAULT_*` 默认值。
 
 三个模型可以指向不同端点或不同模型，例如：
