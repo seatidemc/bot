@@ -1,9 +1,11 @@
-"""AI 对话插件：非指令消息 → router → chat / knowledge agent。
+"""AI 对话插件：群内非指令消息 → router → chat / knowledge agent。
 
 整体结构：
 - / 开头的消息一律视为指令；未知指令由 lab_client 的兜底匹配器回复。
-- 非指令消息进入本插件；AI 关闭时回复「暂未启动AI」。
+- 非指令群消息进入本插件；AI 关闭时回复「暂未启动AI」。
 - AI 开启时先由 router 判断是普通聊天还是知识库问答，再交给对应 agent。
+- 只处理群聊；私聊消息直接忽略。
+- 群聊记录永久写入 data/chat_log.db，群内所有人共享同一份上下文。
 """
 
 from __future__ import annotations
@@ -13,30 +15,21 @@ import time
 from collections import deque
 
 from nonebot import get_driver, on_message
-from nonebot.adapters.qq import (
-    Bot,
-    C2CMessageCreateEvent,
-    GroupMessageCreateEvent,
-)
+from nonebot.adapters.qq import Bot, GroupMessageCreateEvent
 from nonebot.log import logger
 from nonebot.permission import Permission
 from nonebot.rule import Rule
 
 from ..lab_client import is_command_text, is_group_addressed
-from . import api, config, memory, tools, workflow
+from . import api, chat_log, config, tools, workflow
 
-# ─── 权限：私聊 / 群聊 ────────────────────────────────────────
+# ─── 匹配器 ──────────────────────────────────────────────────
 
-PRIVATE = Permission(lambda event: isinstance(event, C2CMessageCreateEvent))
 GROUP_ANY = Permission(lambda event: isinstance(event, GroupMessageCreateEvent))
-PRIVATE_OR_ANY_GROUP = PRIVATE | GROUP_ANY
 
 
 def _chat_allowed(event) -> bool:
-    """决定哪些消息会进入 AI 工作流。"""
-    if isinstance(event, C2CMessageCreateEvent):
-        return not is_command_text(event.get_plaintext().strip())
-
+    """决定哪些群消息会进入 AI 工作流。"""
     if not isinstance(event, GroupMessageCreateEvent):
         return False
     if getattr(getattr(event, "author", None), "bot", False):
@@ -54,23 +47,8 @@ def _chat_allowed(event) -> bool:
 
 chat_allowed = Rule(_chat_allowed)
 
-_user_locks: dict[str, asyncio.Lock] = {}
-_semaphore = asyncio.Semaphore(max(1, config.AI_MAX_CONCURRENCY))
-
-
-def _history_key(event) -> str:
-    if isinstance(event, GroupMessageCreateEvent):
-        return f"group:{event.group_openid}:{event.get_user_id()}"
-    return f"c2c:{event.get_user_id()}"
-
-
-def _lock_for(key: str) -> asyncio.Lock:
-    lock = _user_locks.get(key)
-    if lock is None:
-        lock = asyncio.Lock()
-        _user_locks[key] = lock
-    return lock
-
+# 全局互斥：同一时间只允许一条 AI 链路在跑
+_chain_lock = asyncio.Lock()
 
 _auto_chat_times: dict[str, deque[float]] = {}
 _auto_chat_lock = asyncio.Lock()
@@ -92,21 +70,63 @@ async def _allow_auto_chat(group_openid: str) -> bool:
         return True
 
 
+# ─── 群聊记录 ────────────────────────────────────────────────
+
+# 所有群消息（含指令、未 @ 的闲聊）都先落库，供上下文和工具检索
+recorder = on_message(priority=1, block=False)
+
+
+@recorder.handle()
+async def _record_group_message(event):
+    if not isinstance(event, GroupMessageCreateEvent):
+        return
+    author = getattr(event, "author", None)
+    if getattr(author, "bot", False):
+        return
+
+    text = event.get_plaintext().strip()
+    if not text:
+        return
+
+    try:
+        await chat_log.record_user(
+            event.group_openid,
+            event.get_user_id(),
+            text,
+            message_id=getattr(event, "id", None) or None,
+            username=getattr(author, "username", "") or "",
+        )
+    except Exception:
+        logger.exception("群聊记录写入失败")
+
+
+async def _load_history(event: GroupMessageCreateEvent) -> list[dict[str, str]]:
+    """群聊上下文直接取自永久聊天记录，排除正在处理的这条消息。"""
+    try:
+        return await chat_log.recent_messages(
+            event.group_openid,
+            config.AI_CHAT_LOG_RECENT,
+            exclude_message_id=getattr(event, "id", None) or None,
+        )
+    except Exception:
+        logger.exception("群聊记录读取失败，本次使用空上下文")
+        return []
+
+
 # ─── 聊天匹配器 ──────────────────────────────────────────────
 
 chat = on_message(
-    rule=chat_allowed, permission=PRIVATE_OR_ANY_GROUP, priority=10, block=True
+    rule=chat_allowed, permission=GROUP_ANY, priority=10, block=True
 )
 
 
 @chat.handle()
-async def handle_chat(bot: Bot, event):
+async def handle_chat(bot: Bot, event: GroupMessageCreateEvent):
     text = event.get_plaintext().strip()
-    is_group = isinstance(event, GroupMessageCreateEvent)
-    addressed = is_group_addressed(event) if is_group else True
+    addressed = is_group_addressed(event)
 
     if not text:
-        if addressed or not is_group:
+        if addressed:
             await chat.finish("目前只支持文字聊天哦，直接发文字给我就行～")
         return
 
@@ -114,36 +134,48 @@ async def handle_chat(bot: Bot, event):
         await chat.finish("暂未启动AI")
         return
 
-    if is_group and not addressed:
+    if _chain_lock.locked():
+        if addressed:
+            await chat.finish("上一条消息正在处理中，请稍后再问")
+        logger.debug("AI 链路正在处理其他消息，跳过未 @ 的群消息")
+        return
+
+    if not addressed:
         if not await _allow_auto_chat(event.group_openid):
             logger.debug(
                 f"自动聊天达到每分钟上限 {config.AI_GROUP_CHAT_PER_MINUTE}，跳过"
             )
             return
+        # 限流检查期间可能已有链路启动，再确认一次
+        if _chain_lock.locked():
+            logger.debug("AI 链路正在处理其他消息，跳过未 @ 的群消息")
+            return
 
-    key = _history_key(event)
-
-    async with _lock_for(key):
-        # 同一个人连发多条时排队，避免上下文交错
-        history = memory.get_messages(key)
-
-        async with _semaphore:
+    # 检查与获取之间没有 await，保证互斥判断和拿锁是原子的
+    async with _chain_lock:
+        # 工具需要知道当前群；私聊不进入本插件，所以一定有值
+        token = tools.set_group_context(event.group_openid)
+        try:
+            history = await _load_history(event)
             try:
                 result = await workflow.run(text, history)
             except api.LLMError as e:
                 logger.warning(f"AI 调用失败: {e}")
                 await chat.finish(f"😥 AI 暂时不可用：{e.message}")
-                return
             except Exception:
                 logger.exception("AI 工作流执行异常")
                 await chat.finish("😥 AI 暂时不可用，请稍后再试")
-                return
+        finally:
+            tools.reset_group_context(token)
 
     reply = result.reply
     if not reply:
         reply = "（AI 没有返回内容，换个问法试试？）"
 
-    memory.add_turn(key, text, reply)
+    try:
+        await chat_log.record_bot(event.group_openid, reply)
+    except Exception:
+        logger.exception("群聊记录写入失败")
     await chat.finish(reply)
 
 
@@ -172,6 +204,10 @@ async def _on_startup():
         f"router={config.ROUTER.model} "
         f"chat={config.CHAT.model} "
         f"knowledge={config.KNOWLEDGE.model}"
+    )
+    logger.info(
+        f"群聊记录：{chat_log.db_path()}，"
+        f"上下文预置最近 {config.AI_CHAT_LOG_RECENT} 条"
     )
     logger.info(f"知识库索引：{config.AI_KNOWLEDGE_LLMS_TXT_URL}")
 

@@ -12,5 +12,6 @@
 1. 结合最近对话理解指代和追问；如果最新消息明显是在追问上一轮的知识库话题，选 knowledge。
 2. 询问在线人数、服务器 IP、运行时长、内存/CPU 等实时数据时，选 chat。
 3. 不确定时选 chat。
-4. 只输出一个 JSON 对象，不要输出 Markdown、解释或其他文字。
+4. 只输出一个 JSON 对象，不要输出 Markdown、代码块、解释或其他文字。
 5. JSON 格式：`{"intent": "chat", "reason": "简短原因"}` 或 `{"intent": "knowledge", "reason": "简短原因"}`。
+6. `intent` 字段名固定为 `intent`，值只能是 `chat` 或 `knowledge` 这两个小写英文词，不要使用别名、同义词或中文。

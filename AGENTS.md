@@ -34,13 +34,13 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `src/plugins/lab_client/__init__.py` | 命令匹配器、未知指令兜底、群 openid 自动发现、状态格式化 |
 | `src/plugins/lab_client/config.py` | 从 NoneBot 配置读取 `BACKEND_BASE_URL`、`GROUP_OPENID` |
 | `src/plugins/lab_client/api.py` | 对后端机器人接口的 HTTP 封装（`ping` / `server-status` / `trigger-one-click-start`），路径直接拼在 `BACKEND_BASE_URL` 后。无鉴权，后端响应格式 `{"data": ...}` / `{"details": "..."}` |
-| `src/plugins/ai/__init__.py` | 非指令消息入口：AI 总开关、群 @ / 自动聊天、限流、同一用户串行处理 |
+| `src/plugins/ai/__init__.py` | 群消息入口：聊天记录落库、AI 总开关、群 @ / 自动聊天、限流、全局互斥 |
 | `src/plugins/ai/config.py` | router / chat / knowledge 三套模型配置、提示词与知识库 URL 加载 |
 | `src/plugins/ai/api.py` | OpenAI 兼容 `/chat/completions` 客户端，支持工具调用、JSON 输出、用量日志 |
 | `src/plugins/ai/agents.py` | router 判定 + 简单 agent loop（工具调用、结果回填，轮数由模型自行结束） |
-| `src/plugins/ai/tools.py` | 聊天工具（实时状态、时间）与知识库工具（llms.txt 检索、受限 fetch） |
+| `src/plugins/ai/tools.py` | 聊天工具（群聊记录检索、实时状态、时间）与知识库工具（llms.txt 检索、受限 fetch） |
 | `src/plugins/ai/workflow.py` | 工作流编排：router → agent |
-| `src/plugins/ai/memory.py` | 进程内保存每用户最近 N 轮上下文 |
+| `src/plugins/ai/chat_log.py` | 群聊聊天记录永久存储（SQLite `data/chat_log.db`），供上下文预置和 `search_chat_log` 检索 |
 | `src/plugins/http_api/` | 对外 HTTP 接口：`POST /bot/group-message` 向固定群发消息，`GET /bot/health` 探活；仅回环地址，随 NoneBot 的 FastAPI 驱动启动 |
 | `test_mock_client.py` | [已废弃] 旧版 OneBot v11 模拟客户端，迁移至 adapter-qq 后不再可用 |
 
@@ -64,8 +64,7 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `AI_ROUTER_*` | router 模型配置：`AI_ROUTER_API_KEY` 必填；`BASE_URL`、`MODEL`、`TEMPERATURE`、`THINKING_EFFORT`、`MAX_TOKENS`、`TIMEOUT`、`SYSTEM_PROMPT_FILE`、`HISTORY_TURNS` 可分别配置 |
 | `AI_CHAT_*` | 普通聊天 agent 配置，`AI_CHAT_API_KEY` 必填；其余字段同上 |
 | `AI_KNOWLEDGE_*` | 知识库 agent：`AI_KNOWLEDGE_API_KEY` 必填；其余模型字段同上，另有 `LLMS_TXT_URL`、`TOP_K`、`FETCH_TIMEOUT`、`CACHE_TTL` |
-| `AI_MAX_TURNS` | 每用户保留的对话轮数，默认 10 |
-| `AI_HISTORY_TTL` | 上下文空闲过期秒数，默认 3600 |
+| `AI_CHAT_LOG_RECENT` | 群聊上下文预置的最近聊天记录条数，默认 20，最大 200 |
 | `AI_ROUTER_HISTORY_TURNS` | router 参考最近多少轮对话，默认 3 |
 | `AI_GROUP_CHAT_WITHOUT_AT` | 群内不 @ 是否参与聊天，默认 false |
 | `AI_GROUP_CHAT_PER_MINUTE` | 每个群每分钟自动聊天回复上限，默认 5 |
@@ -78,14 +77,14 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 
 | 命令 | 别名 | 权限 | 说明 |
 |---|---|---|---|
-| `/状态` | `status`, `zt` | 群/私聊 | 调 `GET /bot-v1/server-status`：在线状态、IP、玩家数、运行时长、内存/CPU、预计释放时间 |
-| `/启动` | `start`, `qd` | 群/私聊 | 调 `POST /bot-v1/trigger-one-click-start`；任务已在跑时提示无需重复触发 |
+| `/状态` | `status`, `zt` | 群聊（@bot） | 调 `GET /bot-v1/server-status`：在线状态、IP、玩家数、运行时长、内存/CPU、预计释放时间 |
+| `/启动` | `start`, `qd` | 群聊（@bot） | 调 `POST /bot-v1/trigger-one-click-start`；任务已在跑时提示无需重复触发 |
 
 命令不需要登录；后端按来源地址限流，`/启动` 遇到 `409`（其他部署链任务执行中）或 `429` 会直接回复原因。
 
 **指令判定**：任何以 `/` 或 `／` 开头的消息都视为指令，无论该指令是否存在。已知指令由 `on_command` 处理；未知指令由 `lab_client` 的兜底匹配器回复「指令不存在」并列出可用指令。群内指令仍然需要 @bot，未 @ 的斜杠消息会被忽略。
 
-**非指令消息**：进入 `ai` 工作流。AI 关闭时回复「暂未启动AI」；AI 开启时交给 router 判断聊天类型。
+**非指令消息**：只有群消息进入 `ai` 工作流（私聊直接忽略）。所有群消息先写入 `data/chat_log.db`；AI 关闭时回复「暂未启动AI」，AI 开启时从聊天记录预置上下文并交给 router 判断聊天类型。
 
 ## 本地测试
 
@@ -115,7 +114,7 @@ source .venv/bin/activate && python test_mock_client.py
 - 后端错误响应字段名是 `details` 不是 `error`
 - QQ 官方 API 用 `openid` 标识用户和群，不是 QQ 号
 - 群主开启「获取群内全部消息」后，事件类型从 `GROUP_AT_MESSAGE_CREATE` 变为 `GROUP_MESSAGE_CREATE`；插件统一用 `GroupMessageCreateEvent` 基类，并用 `event.to_me` / `mentions.is_you` 判断是否被 @
-- `QQ_BOTS` 的 intent 只开了 `c2c_group_at_messages`，bot 只能收到私聊和群 @ 消息
+- `QQ_BOTS` 的 intent 只开了 `c2c_group_at_messages`，bot 会收到私聊和群 @ 消息；目前私聊事件直接忽略，只处理群聊
 - `GROUP_OPENID` 首次为空是正常的：启动后在群里 @bot，从日志复制 openid 填入后重启即可
 - `.env`、`data/`、`.venv/` 均被 `.gitignore` 排除
 - 项目无 CI/CD，服务器上直接 `python bot.py` 配合 systemd 或 screen/tmux 运行
@@ -153,13 +152,14 @@ SEATIDE_ENV=prod python bot.py   # 生产
 
 - **指令优先**：斜杠消息不会进入 AI；未知指令由 `lab_client` 回复「指令不存在」。
 - **启动校验**：`AI_ENABLED=true` 时在启动阶段检查三个模型各自独立的 API Key、BASE_URL、MODEL、系统提示词、temperature / timeout，以及 `AI_KNOWLEDGE_LLMS_TXT_URL` 是否存在且为 http(s) URL；启动时还会实际拉取一次 llms.txt，确认可访问且能解析出条目。任何一项不通过都会抛出 `RuntimeError`，直接阻止启动，不把配置错误留到运行时。
-- **router**：读取系统提示词和最近 `AI_ROUTER_HISTORY_TURNS` 轮对话，输出 `{"intent":"chat"|"knowledge"}`。调用失败、输出无法解析或 intent 未知时直接报错，不切换到其他 agent。
-- **chat agent**：系统提示词默认 `prompts/system_prompt.md`，工具为 `get_server_status`、`get_current_time`。
+- **router**：读取系统提示词和最近 `AI_ROUTER_HISTORY_TURNS` 轮对话，输出 `{"intent":"chat"|"knowledge"}`。只接受合法 JSON 对象，`intent` 必须严格是 `chat` 或 `knowledge`（无别名、无兜底解析）；调用失败或输出不合规时直接报错，不切换到其他 agent。
+- **chat agent**：系统提示词默认 `prompts/chat_prompt.md`，工具为 `search_chat_log`、`get_server_status`、`get_current_time`。
 - **knowledge agent**：系统提示词默认 `prompts/knowledge_prompt.md`，工具为 `search_knowledge`、`fetch_url`、`get_server_status`。`search_knowledge` 拉取 `AI_KNOWLEDGE_LLMS_TXT_URL` 指向的 llms.txt 并检索条目；`fetch_url` 只允许抓取索引中出现过的 URL，返回 Markdown / 文本 / HTML 提取后的正文。
 - **agent loop**：工具结果原样写回模型，不截断；工具调用轮数不设上限，由模型自行决定何时给出最终回复。
 - **模型配置**：router / chat / knowledge 三套配置互相独立，三个 API Key 必须分别配置；端点、模型 id、temperature、thinking effort、max tokens、超时和系统提示词可分别设置，未配置时回退到 `AI_DEFAULT_*` 默认值（API Key 不回退）。
-- **上下文**：进程内存保存每用户最近 `AI_MAX_TURNS` 轮，空闲超过 `AI_HISTORY_TTL` 秒过期，重启丢失。router 和两个 agent 共享同一份对话历史，但只保存用户消息和最终回复，不保存工具调用细节。
-- **并发与限流**：同一用户的消息串行处理，全局并发受 `AI_MAX_CONCURRENCY` 限制；开启 `AI_GROUP_CHAT_WITHOUT_AT` 后，未 @ 的群消息按群每分钟限流，回复走被动消息。
+- **上下文**：只按群隔离，不按人隔离。所有群消息（含指令、未 @ 闲聊）落地到 `data/chat_log.db`；每次请求从该表预置最近 `AI_CHAT_LOG_RECENT` 条作为共享上下文。router 和两个 agent 共享同一份上下文，chat agent 可用 `search_chat_log` 按关键词、最近天数检索更早的记录。
+- **并发与限流**：全局互斥，同一时间只跑一条 AI 链路；处理中收到的 @ 消息立即回复「上一条消息正在处理中，请稍后再问」，未 @ 的自动聊天消息直接跳过。开启 `AI_GROUP_CHAT_WITHOUT_AT` 后，未 @ 的群消息另按群每分钟限流，回复走被动消息。
+- **私聊**：暂不支持。私聊事件会被直接忽略，指令和 AI 都只处理群聊。
 - **日志**：每次路由以 INFO 记录 `AI 路由：chat/knowledge`；每次模型调用记录 `LLM 用量[component/model]`（prompt / completion / 思考 token / 缓存命中）。
 - **知识库**：标准 llms.txt 索引（`# 标题`、`> 简介`、`## 章节`、`- [标题](URL): 说明`）；没有链接时把 llms.txt 自身当作可 fetch 的文档。索引与页面按 `AI_KNOWLEDGE_CACHE_TTL` 秒缓存，支持 Markdown、纯文本和 HTML，HTML 会去掉脚本/导航/页脚。
 - **抓取安全**：`fetch_url` 只允许抓取 llms.txt 索引中出现过的 URL，以及 http(s) 协议；重定向逐跳校验。不再限制回环/内网地址。

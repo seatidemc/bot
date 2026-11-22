@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -52,19 +51,12 @@ class RouteDecision:
     reason: str = ""
 
 
-_KNOWLEDGE_INTENTS = {
-    "knowledge",
-    "knowledge_base",
-    "knowledge_qa",
-    "kb",
-    "rag",
-    "知识库",
-    "知识库问答",
-}
-_CHAT_INTENTS = {"chat", "闲聊", "聊天", "普通聊天"}
+_INTENTS = ("chat", "knowledge")
 
 
 def _parse_route(content: str) -> RouteDecision:
+    """严格解析 router 输出：只接受合法 JSON，intent 必须是固定枚举值。"""
+
     def fail(message: str):
         raise api.LLMError(
             message,
@@ -76,35 +68,20 @@ def _parse_route(content: str) -> RouteDecision:
     if not text:
         fail("router 返回空内容")
 
-    if text.startswith("```"):
-        text = text.strip("`").strip()
-        if text.lower().startswith("json"):
-            text = text[4:].strip()
-
-    data: Any = None
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", text, re.S)
-        if match:
-            try:
-                data = json.loads(match.group(0))
-            except json.JSONDecodeError:
-                data = None
+        fail(f"router 输出不是合法 JSON：{content[:120]!r}")
 
     if not isinstance(data, dict):
-        fail(f"router 输出无法解析：{content[:120]!r}")
+        fail(f"router 输出不是 JSON 对象：{content[:120]!r}")
 
-    raw_intent = data.get("intent") or data.get("route") or data.get("agent") or ""
-    intent = str(raw_intent).strip().lower()
+    intent = data.get("intent")
+    if intent not in _INTENTS:
+        fail(f"router 返回未知 intent：{intent!r}")
+
     reason = str(data.get("reason") or "").strip()[:120]
-
-    if intent in _KNOWLEDGE_INTENTS:
-        return RouteDecision("knowledge", reason or "router 判定为知识库问答")
-    if intent in _CHAT_INTENTS:
-        return RouteDecision("chat", reason or "router 判定为普通聊天")
-
-    fail(f"router 返回未知 intent：{intent or '空'}")
+    return RouteDecision(intent, reason)
 
 
 async def route(text: str, history: list[dict[str, str]]) -> RouteDecision:

@@ -12,6 +12,7 @@ import json
 import re
 import time
 from collections import OrderedDict
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from datetime import datetime
 from html.parser import HTMLParser
@@ -22,7 +23,7 @@ import httpx
 from nonebot.log import logger
 
 from ..lab_client import api as backend_api
-from . import config
+from . import chat_log, config
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,22 @@ class Tool:
                 "parameters": self.parameters,
             },
         }
+
+
+# ─── 当前对话所在的群 ────────────────────────────────────────
+
+# agent loop 期间由 ai/__init__.py 写入，工具用它确定要检索哪个群
+_CURRENT_GROUP: ContextVar[str | None] = ContextVar(
+    "ai_current_group", default=None
+)
+
+
+def set_group_context(group_openid: str | None) -> Token:
+    return _CURRENT_GROUP.set(group_openid or None)
+
+
+def reset_group_context(token: Token) -> None:
+    _CURRENT_GROUP.reset(token)
 
 
 # ─── 聊天工具 ────────────────────────────────────────────────
@@ -63,6 +80,93 @@ async def _get_current_time() -> str:
     return (
         f"{now.strftime('%Y-%m-%d %H:%M:%S %z')} "
         f"星期{weekdays[now.weekday()]}"
+    )
+
+
+# ─── 群聊记录检索 ────────────────────────────────────────────
+
+
+def _normalize_keywords(value: Any) -> list[str]:
+    """把模型给的关键词统一成去重后的短词列表。"""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw = [value]
+    elif isinstance(value, (list, tuple)):
+        raw = [str(item) for item in value]
+    else:
+        return []
+
+    terms: list[str] = []
+    for item in raw:
+        for part in _WORD_SPLIT.split(item):
+            part = part.strip()
+            if part and part not in terms:
+                terms.append(part)
+    return terms[:8]
+
+
+def _log_speaker(entry: chat_log.ChatLogEntry) -> str:
+    if entry.role == "bot":
+        return "bot"
+    name = entry.username.strip()
+    if name:
+        return name
+    openid = entry.user_openid.strip()
+    return f"玩家{openid[-4:]}" if openid else "玩家"
+
+
+def _format_log_entry(entry: chat_log.ChatLogEntry) -> str:
+    stamp = datetime.fromtimestamp(entry.created_at).strftime("%Y-%m-%d %H:%M")
+    return f"[{stamp}] {_log_speaker(entry)}：{entry.content}"
+
+
+async def _search_chat_log(
+    keywords: Any = None,
+    days: Any = 7,
+    limit: Any = 50,
+) -> str:
+    group_openid = _CURRENT_GROUP.get()
+    if not group_openid:
+        return "当前对话不在群聊中，无法检索群聊记录。"
+
+    terms = _normalize_keywords(keywords)
+    try:
+        days_value = int(days)
+    except (TypeError, ValueError):
+        days_value = 7
+    days_value = max(0, min(days_value, 365))
+    try:
+        limit_value = int(limit)
+    except (TypeError, ValueError):
+        limit_value = 50
+    limit_value = max(1, min(limit_value, 200))
+
+    since = None if days_value == 0 else time.time() - days_value * 86400
+    scope = "不限时间" if days_value == 0 else f"最近 {days_value} 天"
+    keyword_text = "、".join(terms) if terms else "无"
+
+    try:
+        entries = await chat_log.search(
+            group_openid,
+            terms,
+            since=since,
+            limit=limit_value,
+        )
+    except Exception as e:
+        logger.warning(f"群聊记录检索失败: {e}")
+        return f"群聊记录检索失败：{e.__class__.__name__}"
+
+    if not entries:
+        return (
+            f"没有找到群聊记录（{scope}，关键词：{keyword_text}）。"
+            "可以换更短的关键词、去掉部分关键词，或扩大天数再试。"
+        )
+
+    body = "\n".join(_format_log_entry(entry) for entry in entries)
+    return (
+        f"群聊记录（{scope}，关键词：{keyword_text}，共 {len(entries)} 条）：\n"
+        f"{body}"
     )
 
 
@@ -584,6 +688,39 @@ GET_CURRENT_TIME = Tool(
     handler=_get_current_time,
 )
 
+SEARCH_CHAT_LOG = Tool(
+    name="search_chat_log",
+    description=(
+        "检索本群永久保存的聊天记录，用于回答“之前谁说过……”"
+        "“昨天群里聊了什么”这类需要回忆群聊内容的问题。"
+        "可以只按时间检索，也可以叠加关键词。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "keywords": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "关键词列表，每个词都要在消息内容中出现才算命中；"
+                    "中文建议用 2-4 字的短词。不传则只按时间检索。"
+                ),
+            },
+            "days": {
+                "type": "integer",
+                "description": (
+                    "检索最近多少天，默认 7；0 表示不限时间，最大 365"
+                ),
+            },
+            "limit": {
+                "type": "integer",
+                "description": "最多返回多少条，默认 50，最大 200",
+            },
+        },
+    },
+    handler=_search_chat_log,
+)
+
 SEARCH_KNOWLEDGE = Tool(
     name="search_knowledge",
     description=(
@@ -623,8 +760,12 @@ FETCH_URL = Tool(
     handler=_fetch_url,
 )
 
-# 普通聊天 agent 可以查实时状态和时间
-CHAT_TOOLS: tuple[Tool, ...] = (GET_SERVER_STATUS, GET_CURRENT_TIME)
+# 普通聊天 agent 可以查实时状态、时间和群聊记录
+CHAT_TOOLS: tuple[Tool, ...] = (
+    SEARCH_CHAT_LOG,
+    GET_SERVER_STATUS,
+    GET_CURRENT_TIME,
+)
 
 # 知识库问答 agent：检索 llms.txt → fetch 正文，也可以查实时状态
 KNOWLEDGE_TOOLS: tuple[Tool, ...] = (

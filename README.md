@@ -107,7 +107,7 @@ $env:SEATIDE_ENV = "prod"
 1. 登录 [QQ 开放平台](https://q.qq.com/)，完成主体认证
 2. 创建机器人，进入「开发 → 开发设置」
 3. 复制 **AppID** 和 **AppSecret**
-4. 开通事件订阅：群聊 @ 消息、私聊消息
+4. 开通事件订阅：群聊 @ 消息（目前不支持私聊，私聊事件会被忽略）
 5. 把凭据填入 `QQ_BOTS`：
 
 ```env
@@ -151,16 +151,14 @@ QQ_BOTS='[
 | `AI_ROUTER_*` | 见 `.env.example` | router 模型：`API_KEY`（必填）/ `BASE_URL` / `MODEL` / `TEMPERATURE` / `THINKING_EFFORT` / `MAX_TOKENS` / `TIMEOUT` / `SYSTEM_PROMPT_FILE` / `HISTORY_TURNS` |
 | `AI_CHAT_*` | 见 `.env.example` | chat agent 模型配置，字段同上；`API_KEY` 必填 |
 | `AI_KNOWLEDGE_*` | 见 `.env.example` | knowledge agent 模型配置，`API_KEY` 必填；另有 `LLMS_TXT_URL` / `TOP_K` / `FETCH_TIMEOUT` / `CACHE_TTL` |
-| `AI_CHAT_SYSTEM_PROMPT_FILE` | `prompts/system_prompt.md` | chat agent 系统提示词 |
+| `AI_CHAT_SYSTEM_PROMPT_FILE` | `prompts/chat_prompt.md` | chat agent 系统提示词 |
 | `AI_KNOWLEDGE_SYSTEM_PROMPT_FILE` | `prompts/knowledge_prompt.md` | knowledge agent 系统提示词 |
 | `AI_ROUTER_SYSTEM_PROMPT_FILE` | `prompts/router_prompt.md` | router 系统提示词 |
 | `AI_KNOWLEDGE_LLMS_TXT_URL` | 空 | 知识库 llms.txt 索引 URL，必须是 http/https；AI 开启时必填 |
 | `AI_KNOWLEDGE_TOP_K` | `5` | `search_knowledge` 最多返回的索引条目数 |
 | `AI_KNOWLEDGE_FETCH_TIMEOUT` | `15` | 抓取 llms.txt / 页面的超时秒数 |
 | `AI_KNOWLEDGE_CACHE_TTL` | `300` | 索引/页面内存缓存秒数，0 表示不缓存 |
-| `AI_MAX_TURNS` | `10` | 每个用户保留的对话轮数 |
-| `AI_HISTORY_TTL` | `3600` | 上下文空闲过期秒数 |
-| `AI_MAX_CONCURRENCY` | `4` | 全局最大并发模型调用数 |
+| `AI_CHAT_LOG_RECENT` | `20` | 群聊上下文预置的最近聊天记录条数，最大 200 |
 | `AI_ROUTER_HISTORY_TURNS` | `3` | router 参考最近多少轮对话 |
 | `AI_GROUP_CHAT_WITHOUT_AT` | `false` | 群内不 @ 也参与聊天；回复走被动消息 |
 | `AI_GROUP_CHAT_PER_MINUTE` | `5` | 每个群每分钟自动聊天回复上限，0 关闭 |
@@ -173,8 +171,8 @@ QQ_BOTS='[
 
 | 命令 | 别名 | 范围 | 说明 |
 |---|---|---|---|
-| `/状态` | `status`、`zt` | 群/私聊 | 服务器在线状态、IP、玩家数、运行时长、内存/CPU、预计释放时间 |
-| `/启动` | `start`、`qd` | 群/私聊 | 触发 `oneclick_start_game` 一键启动任务 |
+| `/状态` | `status`、`zt` | 群聊（@bot） | 服务器在线状态、IP、玩家数、运行时长、内存/CPU、预计释放时间 |
+| `/启动` | `start`、`qd` | 群聊（@bot） | 触发 `oneclick_start_game` 一键启动任务 |
 
 群内命令需要 @bot；开启自动聊天后普通聊天不需要 @，但命令仍然需要。命令不需要登录，后端只按来源地址限制访问频率。
 
@@ -188,13 +186,13 @@ QQ_BOTS='[
 2. 非指令消息 → 进入 AI。AI 关闭（`AI_ENABLED=false`）时回复「暂未启动AI」。
 3. AI 开启 → router 模型判断是普通聊天还是知识库问答。
 4. 普通聊天交给 chat agent，知识库问答交给 knowledge agent；各自有独立的系统提示词、模型配置和工具集。
-5. agent 可调用工具（实时服务器状态、当前时间、知识库检索），由模型自行决定何时结束工具调用并给出最终回复。
+5. agent 可调用工具（群聊记录检索、实时服务器状态、当前时间、知识库检索），由模型自行决定何时结束工具调用并给出最终回复。
 
 补充说明：
 
-- 私聊直接发任意非指令文字；群内 @bot 后发文字。开启自动聊天后，未 @ 的普通文字也会进入 AI。
-- 每次请求会带上该用户最近 `AI_MAX_TURNS` 轮上下文，空闲超过 `AI_HISTORY_TTL` 秒自动清空；上下文只保存在进程内存，重启后丢失。
-- 同一个用户的消息串行处理，全局并发受 `AI_MAX_CONCURRENCY` 限制。
+- 只支持群聊：@bot 后发文字；开启自动聊天后，未 @ 的普通文字也会进入 AI。私聊消息直接忽略。
+- 群聊记录永久保存在 `data/chat_log.db`（含指令和未 @ 的闲聊），上下文按群共享、不按人隔离；每次请求预置最近 `AI_CHAT_LOG_RECENT` 条，更早的内容由 chat agent 调用 `search_chat_log` 按关键词和最近天数检索。
+- 全局互斥：同一时间只跑一条 AI 链路。处理中收到的 @ 消息会立即回复「上一条消息正在处理中，请稍后再问」，未 @ 的自动聊天消息直接跳过。
 - 启动校验：`AI_ENABLED=true` 时会检查三个模型的 API Key、BASE_URL、MODEL、系统提示词、temperature / timeout，以及 `AI_KNOWLEDGE_LLMS_TXT_URL`；启动时还会实际拉取一次 llms.txt，确认可访问且能解析出条目。任何一项失败都会直接阻止启动，不会留到运行时降级。
 - router 调用失败或输出无法解析时，直接回复 AI 不可用错误，不切换到其他 agent。
 - 每次路由以 INFO 记录 `AI 路由：chat/knowledge`；每次模型调用记录 `LLM 用量[component/model]`：prompt / completion / 思考 token / 缓存命中情况，便于观察成本构成。

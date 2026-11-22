@@ -11,10 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 from nonebot import on_command, on_message
-from nonebot.adapters.qq import (
-    C2CMessageCreateEvent,
-    GroupMessageCreateEvent,
-)
+from nonebot.adapters.qq import GroupMessageCreateEvent
 from nonebot.log import logger
 from nonebot.permission import Permission
 from nonebot.rule import Rule
@@ -50,11 +47,7 @@ def get_group_openid() -> str:
     return _get_group_openid()
 
 
-# ─── 权限：私聊 vs 群聊 ────────────────────────────────────────
-
-
-async def _is_private(event) -> bool:
-    return isinstance(event, C2CMessageCreateEvent)
+# ─── 权限：仅群聊 ────────────────────────────────────────────
 
 
 def is_group_addressed(event) -> bool:
@@ -81,9 +74,8 @@ async def _is_group(event) -> bool:
     return is_group_addressed(event)
 
 
-PRIVATE = Permission(_is_private)
+# 目前只支持群聊：所有指令都要求 @bot
 GROUP = Permission(_is_group)
-PRIVATE_OR_GROUP = PRIVATE | GROUP
 
 
 def is_command_text(text: str) -> bool:
@@ -200,7 +192,7 @@ def _format_status(data: dict) -> str:
 # ─── 命令：/状态 ──────────────────────────────────────────────
 
 status_cmd = on_command(
-    "状态", aliases={"status", "zt"}, permission=PRIVATE_OR_GROUP, priority=5
+    "状态", aliases={"status", "zt"}, permission=GROUP, priority=5
 )
 
 
@@ -218,7 +210,7 @@ async def handle_status():
 # ─── 命令：/启动 ──────────────────────────────────────────────
 
 start_cmd = on_command(
-    "启动", aliases={"start", "qd"}, permission=PRIVATE_OR_GROUP, priority=5
+    "启动", aliases={"start", "qd"}, permission=GROUP, priority=5
 )
 
 
@@ -260,7 +252,7 @@ def _is_unknown_command(event) -> bool:
 # 能走到这里的斜杠开头消息就是未知指令。
 _unknown_command = on_message(
     rule=Rule(_is_unknown_command),
-    permission=PRIVATE_OR_GROUP,
+    permission=GROUP,
     priority=50,
     block=True,
 )

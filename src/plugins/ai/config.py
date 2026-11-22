@@ -146,7 +146,7 @@ AI_DEFAULT_THINKING_EFFORT = _thinking_effort(
 
 def _build_chat() -> ModelConfig:
     prompt_file = _text(
-        "ai_chat_system_prompt_file", "prompts/system_prompt.md"
+        "ai_chat_system_prompt_file", "prompts/chat_prompt.md"
     )
     return ModelConfig(
         component="chat",
@@ -228,9 +228,8 @@ KNOWLEDGE: ModelConfig = ModelConfig(
 # AI 总开关：整个 AI 链路只有这一个开关
 AI_ENABLED: bool = _as_bool(_raw("ai_enabled"), True)
 
-AI_MAX_TURNS: int = max(1, _int("ai_max_turns", 10))
-AI_HISTORY_TTL: int = _int("ai_history_ttl", 3600)
-AI_MAX_CONCURRENCY: int = max(1, _int("ai_max_concurrency", 4))
+# 群聊上下文直接取自永久聊天记录：每次请求预置最近多少条
+AI_CHAT_LOG_RECENT: int = min(200, max(0, _int("ai_chat_log_recent", 20)))
 
 # router 参考最近多少轮对话（用于理解追问和指代）
 AI_ROUTER_HISTORY_TURNS: int = max(0, _int("ai_router_history_turns", 3))
