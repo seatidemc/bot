@@ -63,7 +63,7 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `AI_DEFAULT_MAX_TOKENS` | chat / knowledge 未单独配置最大输出 token 时的默认值，默认 `800` |
 | `AI_DEFAULT_THINKING_EFFORT` | chat / knowledge 未单独配置思考强度时的默认值，默认 `low` |
 | `AI_DEFAULT_TIMEOUT` | chat / knowledge 未单独配置超时时的默认值，默认 `60` 秒 |
-| `AI_ROUTER_*` | TypeSafe System One router：`AI_ROUTER_API_KEY` 必填；`BASE_URL` 默认 `https://api.typesafe.ai`，`MODEL` 默认 `jev-latest`；另有 `TIMEOUT`、`MAX_RETRIES`、`HISTORY_TURNS` |
+| `AI_ROUTER_*` | TypeSafe System One router：`AI_ROUTER_API_KEY` 必填；`BASE_URL` 默认 `https://api.typesafe.ai`，用阿里云百炼时填 `https://{WorkspaceId}.{region}.maas.aliyuncs.com/compatible-mode`；`MODEL` 默认 `jev-latest`（百炼填 `decision-model-preview`）；另有 `TIMEOUT`、`MAX_RETRIES`、`HISTORY_TURNS` |
 | `AI_CHAT_*` | 普通聊天 agent 配置，`AI_CHAT_API_KEY` 可回退 `AI_DEFAULT_API_KEY`；其余字段同上 |
 | `AI_KNOWLEDGE_*` | 知识库 agent：`AI_KNOWLEDGE_API_KEY` 可回退 `AI_DEFAULT_API_KEY`；其余模型字段同上，另有 `LLMS_TXT_URL`、`FETCH_TIMEOUT`、`CACHE_TTL`、`FETCH_URL_REGEX` |
 | `AI_CHAT_LOG_RECENT` | 群聊上下文预置的最近聊天记录条数，默认 20，最大 200 |
@@ -121,6 +121,7 @@ source .venv/bin/activate && python test_mock_client.py
 - `GROUP_OPENID` 首次为空是正常的：启动后在群里 @bot，从日志复制 openid 填入后重启即可
 - `.env`、`data/`、`.venv/` 均被 `.gitignore` 排除
 - router 依赖 `typesafe-sdk`（0.7.x，内部使用 `httpx2`）；它只负责 System One，不参与 openai-completions 调用
+- 阿里云百炼决策模型（`AI_ROUTER_MODEL=decision-model-preview`）的端点是 `https://{WorkspaceId}.{region}.maas.aliyuncs.com/compatible-mode/v1/systemone`；SDK 会在 `AI_ROUTER_BASE_URL` 后追加 `/v1/systemone`，所以 BASE_URL 必须以 `/compatible-mode` 结尾。写成 `/compatible-mode/v1` 会请求 `/compatible-mode/v1/v1/systemone` 返回 404，启动校验会直接拦下 `*.maas.aliyuncs.com` 但不以 `/compatible-mode` 结尾的配置
 - chat / knowledge 通过官方 `openai` SDK 调用，API 格式固定为 openai-completions；各 `AI_*_BASE_URL` 填 API 根地址（如 `https://api.deepseek.com` 或 `https://example.com/v1`），SDK 自动拼接 `/chat/completions`，旧配置写成完整端点时本模块会自动去掉该后缀
 - `httpx` 仍用于知识库的 llms.txt / 页面抓取，与 openai SDK 内部的 httpx 客户端互不共用
 - System One 的 `state` / `questions` 必须是 JSON 可序列化对象；最近对话直接复用 `chat_log.recent_messages()` 的 `{role, content}` 结构，role 为 `user` / `assistant`

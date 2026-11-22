@@ -346,6 +346,21 @@ def validate_agent_configs() -> list[str]:
             "router: BASE_URL 必须是 http/https URL，"
             f"当前为 {ROUTER.base_url!r}"
         )
+    else:
+        # typesafe-sdk 直接拼接 BASE_URL + "/v1/systemone"；百炼决策模型
+        # 的正确路径是 /compatible-mode/v1/systemone，所以 BASE_URL 必须
+        # 以 /compatible-mode 结尾（写成 /compatible-mode/v1 会重复 /v1）。
+        parsed = urlparse(ROUTER.base_url)
+        if (parsed.hostname or "").endswith(
+            ".maas.aliyuncs.com"
+        ) and not parsed.path.rstrip("/").endswith(
+            "/compatible-mode"
+        ):
+            problems.append(
+                "router: 阿里云百炼的 AI_ROUTER_BASE_URL 必须以 "
+                "/compatible-mode 结尾（SDK 会自动追加 /v1/systemone），"
+                f"当前为 {ROUTER.base_url!r}"
+            )
     if ROUTER.timeout <= 0:
         problems.append(
             f"router: TIMEOUT 必须大于 0，当前为 {ROUTER.timeout}"

@@ -144,14 +144,15 @@ def _log_usage(result: SystemOneResponse) -> None:
     completion = usage.output_tokens
     if prompt is None and completion is None:
         return
-    total = (
-        prompt + completion
-        if isinstance(prompt, int) and isinstance(completion, int)
-        else None
-    )
+    parts = []
+    if prompt is not None:
+        parts.append(f"prompt {prompt}")
+    if completion is not None:
+        parts.append(f"completion {completion}")
+    if isinstance(prompt, int) and isinstance(completion, int):
+        parts.append(f"total {prompt + completion}")
     logger.info(
-        f"LLM 用量[router/{result.model}]："
-        f"prompt {prompt}，completion {completion}，total {total}"
+        f"LLM 用量[router/{result.model}]：" + "，".join(parts)
     )
 
 
