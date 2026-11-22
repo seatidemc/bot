@@ -191,8 +191,10 @@ def _format_status(data: dict) -> str:
 
 # ─── 命令：/状态 ──────────────────────────────────────────────
 
+# on_command 默认 block=False（NoneBot 2.5），必须显式 block，
+# 否则已知指令处理完后仍会落到下面的未知指令兜底。
 status_cmd = on_command(
-    "状态", aliases={"status", "zt"}, permission=GROUP, priority=5
+    "状态", aliases={"status", "zt"}, permission=GROUP, priority=5, block=True
 )
 
 
@@ -210,7 +212,7 @@ async def handle_status():
 # ─── 命令：/启动 ──────────────────────────────────────────────
 
 start_cmd = on_command(
-    "启动", aliases={"start", "qd"}, permission=GROUP, priority=5
+    "启动", aliases={"start", "qd"}, permission=GROUP, priority=5, block=True
 )
 
 
@@ -248,7 +250,7 @@ def _is_unknown_command(event) -> bool:
     return is_command_text(event.get_plaintext().strip())
 
 
-# 已知指令由上面的 on_command 以更高优先级处理并 block；
+# 已知指令由上面的 on_command（显式 block=True）以更高优先级处理并阻断传播；
 # 能走到这里的斜杠开头消息就是未知指令。
 _unknown_command = on_message(
     rule=Rule(_is_unknown_command),
