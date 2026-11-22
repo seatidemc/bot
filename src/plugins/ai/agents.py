@@ -54,7 +54,7 @@ class RouteDecision:
 _INTENTS = ("chat", "knowledge", "invalid")
 
 
-def _parse_route(content: str) -> RouteDecision:
+def _parse_route(content: str, finish_reason: str = "") -> RouteDecision:
     """严格解析 router 输出：只接受合法 JSON，intent 必须是固定枚举值。"""
 
     def fail(message: str):
@@ -66,7 +66,10 @@ def _parse_route(content: str) -> RouteDecision:
 
     text = content.strip()
     if not text:
-        fail("router 返回空内容")
+        fail(
+            "router 返回空内容"
+            f"（finish_reason={finish_reason or '未知'}）"
+        )
 
     try:
         data = json.loads(text)
@@ -101,7 +104,7 @@ async def route(text: str, history: list[dict[str, str]]) -> RouteDecision:
         messages,
         response_format={"type": "json_object"},
     )
-    decision = _parse_route(result.content)
+    decision = _parse_route(result.content, result.finish_reason)
     reason = f"（{decision.reason}）" if decision.reason else ""
     logger.info(f"AI 路由：{decision.intent}{reason}")
     return decision

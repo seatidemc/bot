@@ -5,6 +5,7 @@ __pycache__/
 data/
 napcat/
 *.swp
+.claude/
 .venv/
 .env.dev
 .env.prod

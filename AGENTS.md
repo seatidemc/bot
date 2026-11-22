@@ -154,7 +154,7 @@ SEATIDE_ENV=prod python bot.py   # 生产
 
 - **指令优先**：斜杠消息不会进入 AI；未知指令由 `lab_client` 回复「指令不存在」。
 - **启动校验**：`AI_ENABLED=true` 时在启动阶段检查三个模型生效后的 API Key、BASE_URL、MODEL、系统提示词、temperature / timeout，以及 `AI_KNOWLEDGE_LLMS_TXT_URL` 是否存在且为 http(s) URL；启动时还会实际拉取一次 llms.txt，确认可访问且能解析出条目。任何一项不通过都会抛出 `RuntimeError`，直接阻止启动，不把配置错误留到运行时。
-- **router**：读取系统提示词和最近 `AI_ROUTER_HISTORY_TURNS` 轮对话，输出 `{"intent":"chat"|"knowledge"|"invalid"}`。只接受合法 JSON 对象，`intent` 必须严格是 `chat`、`knowledge` 或 `invalid`（无别名、无兜底解析）；调用失败或输出不合规时直接报错，不切换到其他 agent。`invalid` 表示消息没有意义，不进入任何 agent，直接回复「似乎这并不是个问题哦，有问题的时候再来找我吧」。
+- **router**：读取系统提示词和最近 `AI_ROUTER_HISTORY_TURNS` 轮对话，输出 `{"intent":"chat"|"knowledge"|"invalid"}`。只接受合法 JSON 对象，`intent` 必须严格是 `chat`、`knowledge` 或 `invalid`（无别名、无兜底解析）；调用失败或输出不合规时直接报错，不切换到其他 agent。`invalid` 表示消息没有意义，不进入任何 agent，直接回复「似乎这并不是个问题哦，有问题的时候再来找我吧」。deepseek 系列在 `reasoning_effort=none` + JSON 模式下偶发只返回空白内容（`finish_reason=stop`，与 temperature、max_tokens 无关）；因此 `THINKING_EFFORT=none` 时 `api.py` 不下发 `reasoning_effort` 字段，改为使用服务端默认。
 - **chat agent**：系统提示词默认 `prompts/chat_prompt.md`，工具为 `search_chat_log`、`get_server_status`、`get_current_time`。
 - **knowledge agent**：系统提示词默认 `prompts/knowledge_prompt.md`，工具为 `search_knowledge`、`fetch_url`、`get_server_status`。`search_knowledge` 拉取 `AI_KNOWLEDGE_LLMS_TXT_URL` 指向的 llms.txt 并检索条目；`fetch_url` 只允许抓取索引中出现过的 URL，返回 Markdown / 文本 / HTML 提取后的正文。
 - **agent loop**：工具结果原样写回模型，不截断；工具调用轮数不设上限，由模型自行决定何时给出最终回复。

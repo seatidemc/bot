@@ -41,6 +41,7 @@ class Completion:
     content: str
     tool_calls: list[dict[str, Any]]
     raw_message: dict[str, Any]
+    finish_reason: str = ""
 
     def assistant_message(self) -> dict[str, Any]:
         """构造可回传给模型的历史 assistant 消息（保留思考内容）。"""
@@ -115,8 +116,12 @@ async def chat_completion(
         "stream": False,
         "temperature": model.temperature,
         "max_tokens": model.max_tokens,
-        "reasoning_effort": model.thinking_effort,
     }
+    # 关闭思考时不发 reasoning_effort 字段。DeepSeek 在
+    # reasoning_effort="none" + JSON 模式下会偶发只返回空白内容
+    # （finish_reason=stop，和 temperature、max_tokens 无关）。
+    if model.thinking_effort != "none":
+        payload["reasoning_effort"] = model.thinking_effort
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = tool_choice or "auto"
@@ -185,10 +190,12 @@ async def chat_completion(
         tool_calls = []
 
     _log_usage(model, data.get("usage"))
+    finish_reason = choice.get("finish_reason")
     return Completion(
         content=content.strip(),
         tool_calls=tool_calls,
         raw_message=message,
+        finish_reason=str(finish_reason or ""),
     )
 
 

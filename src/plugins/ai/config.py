@@ -68,7 +68,8 @@ def _as_bool(value: object, default: bool = False) -> bool:
 
 # ─── 思考强度 ────────────────────────────────────────────────
 
-# none 关闭思考，low / high / max 开启思考（DeepSeek reasoning_effort）
+# none 关闭思考（请求里不下发 reasoning_effort 字段），low / high / max
+# 开启思考（DeepSeek reasoning_effort）
 # 兼容别名：minimal → low，medium / xhigh → high
 _THINKING_EFFORT_ALIASES = {"minimal": "low", "medium": "high", "xhigh": "high"}
 _THINKING_EFFORTS = {"none", "low", "high", "max"}

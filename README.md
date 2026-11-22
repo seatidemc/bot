@@ -196,7 +196,7 @@ QQ_BOTS='[
 - 群聊记录永久保存在 `data/chat_log.db`（含指令和未 @ 的闲聊），上下文按群共享、不按人隔离；每次请求预置最近 `AI_CHAT_LOG_RECENT` 条，更早的内容由 chat agent 调用 `search_chat_log` 按关键词和最近天数检索。
 - 全局互斥：同一时间只跑一条 AI 链路。处理中收到的 @ 消息会立即回复「上一条消息正在处理中，请稍后再问」，未 @ 的自动聊天消息直接跳过。
 - 启动校验：`AI_ENABLED=true` 时会检查三个模型生效后的 API Key、BASE_URL、MODEL、系统提示词、temperature / timeout，以及 `AI_KNOWLEDGE_LLMS_TXT_URL`；启动时还会实际拉取一次 llms.txt，确认可访问且能解析出条目。任何一项失败都会直接阻止启动，不会留到运行时降级。
-- router 调用失败或输出无法解析时，直接回复 AI 不可用错误，不切换到其他 agent。
+- router 调用失败或输出无法解析时，直接回复 AI 不可用错误，不切换到其他 agent。注意 DeepSeek 在 `reasoning_effort=none` + JSON 模式下会偶发只返回空白内容，因此 `THINKING_EFFORT=none` 时代码不发送该字段（与 temperature、max_tokens 无关）。
 - 每次路由以 INFO 记录 `AI 路由：chat/knowledge/invalid`；每次模型调用记录 `LLM 用量[component/model]`：prompt / completion / 思考 token / 缓存命中情况，便于观察成本构成。
 - 三个模型的 API Key 可以分别配置；未配置时回退到 `AI_DEFAULT_API_KEY`（三个 agent 共用同一 Key 时只需填这一项）。端点、模型 id、temperature、thinking effort、max tokens、超时和提示词也可以分别配置，未配置时回退到 `AI_DEFAULT_*` 默认值。
 
