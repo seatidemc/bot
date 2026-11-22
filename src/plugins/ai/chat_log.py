@@ -143,11 +143,13 @@ async def recent_messages(
     limit: int,
     *,
     exclude_message_id: str | None = None,
+    since: float | None = None,
 ) -> list[dict[str, str]]:
     """读取群里最近的聊天记录，返回可直接放进 messages 的列表。
 
     结果按时间正序；``exclude_message_id`` 用于排除当前正在处理的这条
-    消息，避免在 agent 里重复出现。
+    消息，避免在 agent 里重复出现；``since`` 是 Unix 时间戳，只取不早于
+    该时间的记录（``None`` 表示不限时间）。
     """
     if limit <= 0:
         return []
@@ -157,8 +159,16 @@ async def recent_messages(
             "SELECT role, content FROM chat_log "
             "WHERE group_openid = ? "
             "  AND (? IS NULL OR message_id IS NULL OR message_id != ?) "
+            "  AND (? IS NULL OR created_at >= ?) "
             "ORDER BY id DESC LIMIT ?",
-            (group_openid, exclude_message_id, exclude_message_id, limit),
+            (
+                group_openid,
+                exclude_message_id,
+                exclude_message_id,
+                since,
+                since,
+                limit,
+            ),
         ).fetchall()
         return [
             {

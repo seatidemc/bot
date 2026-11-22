@@ -287,6 +287,10 @@ AI_ENABLED: bool = _as_bool(_raw("ai_enabled"), True)
 
 # 群聊上下文直接取自永久聊天记录：每次请求预置最近多少条
 AI_CHAT_LOG_RECENT: int = min(200, max(0, _int("ai_chat_log_recent", 20)))
+# 预置上下文只取最近多少分钟内的记录；0 表示不限时间
+AI_CHAT_LOG_WINDOW_MINUTES: int = max(
+    0, _int("ai_chat_log_window_minutes", 30)
+)
 
 # 知识库：llms.txt 索引 + 按需 fetch
 # llms.txt 是一个 Markdown 索引，通常形如：

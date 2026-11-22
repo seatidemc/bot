@@ -56,11 +56,28 @@ def _tool_message(tool_id: str, content: str) -> dict[str, Any]:
     }
 
 
+def _format_tool_args(raw_args: Any) -> str:
+    if raw_args is None:
+        return "{}"
+    if isinstance(raw_args, str):
+        return raw_args.strip() or "{}"
+    try:
+        return json.dumps(raw_args, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return repr(raw_args)
+
+
 async def _run_tool_call(agent: Agent, call: dict[str, Any]) -> dict[str, Any]:
     function = call.get("function") or {}
     name = str(function.get("name") or "")
     tool_id = str(call.get("id") or "")
     raw_args = function.get("arguments")
+
+    # 调用痕迹只记录工具名和传入参数，不记录工具返回
+    logger.info(
+        f"[{agent.name}] 工具调用：{name or '(未提供名称)'}，"
+        f"参数 {_format_tool_args(raw_args)}"
+    )
 
     if isinstance(raw_args, str):
         try:
@@ -81,7 +98,6 @@ async def _run_tool_call(agent: Agent, call: dict[str, Any]) -> dict[str, Any]:
     if tool is None:
         return _tool_message(tool_id, f"未知工具：{name}")
 
-    logger.debug(f"[{agent.name}] 调用工具 {name}，参数 {arguments}")
     try:
         content = await tool.handler(**arguments)
     except Exception as e:

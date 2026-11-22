@@ -160,6 +160,7 @@ QQ_BOTS='[
 | `AI_KNOWLEDGE_CACHE_TTL` | `300` | 索引/页面内存缓存秒数，0 表示不缓存 |
 | `AI_KNOWLEDGE_FETCH_URL_REGEX` | 空 | `fetch_doc` 允许抓取的 URL 正则（完整匹配）；空表示只受 llms.txt 索引约束，重定向逐跳校验。文档 301 到其他域名时，目标域名也必须被正则放行 |
 | `AI_CHAT_LOG_RECENT` | `20` | 群聊上下文预置的最近聊天记录条数，最大 200 |
+| `AI_CHAT_LOG_WINDOW_MINUTES` | `30` | 群聊上下文只取最近多少分钟内的记录，0 表示不限时间 |
 | `AI_ROUTER_HISTORY_TURNS` | `3` | router 参考最近多少轮对话 |
 | `AI_GROUP_CHAT_WITHOUT_AT` | `false` | 群内不 @ 也参与聊天；回复走被动消息 |
 | `AI_GROUP_CHAT_PER_MINUTE` | `5` | 每个群每分钟自动聊天回复上限，0 关闭 |
@@ -195,7 +196,7 @@ QQ_BOTS='[
 - 群聊记录永久保存在 `data/chat_log.db`（含指令和未 @ 的闲聊），上下文按群共享、不按人隔离；每次请求预置最近 `AI_CHAT_LOG_RECENT` 条，更早的内容由 chat agent 调用 `recall_chat` 按关键词和时间范围（如 `30m` / `12h` / `7d`）检索。
 - 全局互斥：同一时间只跑一条 AI 链路。处理中收到的 @ 消息会立即回复「上一条消息正在处理中，请稍后再问」，未 @ 的自动聊天消息直接跳过。
 - 启动校验：`AI_ENABLED=true` 时会检查 router 的 API Key、BASE_URL、MODEL、timeout，以及 chat / knowledge 的 API Key、BASE_URL、MODEL、系统提示词、temperature / timeout 和 `AI_KNOWLEDGE_LLMS_TXT_URL`；启动时还会实际拉取一次 llms.txt，确认可访问且能解析出条目。任何一项失败都会直接阻止启动，不会留到运行时降级。
-- router 通过 `typesafe-sdk` 调用 System One，不使用 openai-completions。调用失败（超时 / 401 / 429 等）或返回的 intent 不在 `chat` / `knowledge` 中时，直接回复 AI 不可用错误，不切换到其他 agent。
+- router 通过 `typesafe-sdk` 调用 System One，不使用 openai-completions。调用失败（超时 / 401 / 429 等）或返回的 intent 不在 `chat` / `knowledge` 中时不切换到其他 agent；具体错误只写日志，群内只回复统一提示（429 为「请求太频繁」，其余为「AI 暂时不可用」），不暴露内部报错。
 - chat / knowledge 固定使用 OpenAI Chat Completions 格式（openai-completions），通过官方 `openai` SDK 调用；对应的 `AI_*_BASE_URL` 填 API 根地址（如 `https://api.deepseek.com` 或 `https://example.com/v1`），SDK 会自动拼接 `/chat/completions`。
 - 每次路由以 INFO 记录 `AI 路由：chat/knowledge` 和 System One 的置信度；chat / knowledge 的每次模型调用记录 `LLM 用量[component/model]`：prompt / completion / 思考 token / 缓存命中情况，便于观察成本构成。
 - chat / knowledge 的 API Key 可以分别配置；未配置时回退到 `AI_DEFAULT_API_KEY`（共用同一 Key 时只需填这一项）。router 的 Key 不参与这个回退，必须配置 `AI_ROUTER_API_KEY`。端点、模型 id、temperature、thinking effort、max tokens、超时和提示词也可以分别配置，未配置时回退到 `AI_DEFAULT_*` 默认值。

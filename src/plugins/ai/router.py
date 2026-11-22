@@ -77,6 +77,12 @@ async def _get_client() -> AsyncTypeSafeClient:
                         max_retries=config.ROUTER.max_retries,
                         timeout=config.ROUTER.timeout,
                     ),
+                    # SDK 默认对 ≥1024 字节的请求体做 zstd 压缩，但阿里云百炼
+                    # 的 System One 端点不识别 Content-Encoding，会把 zstd 帧
+                    # 直接当 JSON 解码：zstd 魔数首字节 0x28 即 '('，于是报
+                    # "invalid character '(' looking for beginning of value"。
+                    # 关闭压缩后请求体大小不再受 1024 字节限制。
+                    compression=False,
                 )
     return _client
 
@@ -193,10 +199,24 @@ async def route(
         else ""
     )
     probabilities = dict(answer.probabilities or {})
-    logger.debug(f"router 概率：{probabilities}")
-    logger.info(
-        f"AI 路由：{intent}" + (f"（{reason}）" if reason else "")
+    distribution = "，".join(
+        f"{name}={value:.2f}"
+        for name, value in sorted(
+            probabilities.items(), key=lambda item: item[1], reverse=True
+        )
     )
+    logger.info(
+        f"AI 路由：{intent}"
+        + (f"（{reason}）" if reason else "")
+        + (f"，概率 {distribution}" if distribution else "")
+    )
+    if probabilities:
+        top = max(probabilities, key=probabilities.__getitem__)
+        if top != intent:
+            logger.warning(
+                f"router 返回的 choice={intent} 不是概率最高项（{top}），"
+                f"概率 {distribution}"
+            )
     return RouteDecision(
         intent=intent,
         reason=reason,

@@ -939,4 +939,5 @@ KNOWLEDGE_TOOLS: tuple[Tool, ...] = (
     FETCH_DOC,
     GET_SERVER_STATUS,
     GET_CURRENT_TIME,
+    RECALL_CHAT
 )

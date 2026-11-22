@@ -101,19 +101,41 @@ async def _record_group_message(event):
 
 
 async def _load_history(event: GroupMessageCreateEvent) -> list[dict[str, str]]:
-    """群聊上下文直接取自永久聊天记录，排除正在处理的这条消息。"""
+    """群聊上下文直接取自永久聊天记录，排除正在处理的这条消息。
+
+    只取最近 ``AI_CHAT_LOG_RECENT`` 条，且不早于
+    ``AI_CHAT_LOG_WINDOW_MINUTES`` 分钟前。
+    """
+    limit = config.AI_CHAT_LOG_RECENT
+    window = config.AI_CHAT_LOG_WINDOW_MINUTES
+    since = time.time() - window * 60 if window > 0 else None
     try:
-        return await chat_log.recent_messages(
+        history = await chat_log.recent_messages(
             event.group_openid,
-            config.AI_CHAT_LOG_RECENT,
+            limit,
             exclude_message_id=getattr(event, "id", None) or None,
+            since=since,
         )
     except Exception:
         logger.exception("群聊记录读取失败，本次使用空上下文")
         return []
 
+    span = f"{window} 分钟内" if window > 0 else "不限时间"
+    logger.info(
+        f"群聊上下文：预置 {len(history)} 条（上限 {limit} 条，{span}）"
+    )
+    return history
+
 
 # ─── 聊天匹配器 ──────────────────────────────────────────────
+
+
+def _user_facing_error(error: api.LLMError) -> str:
+    """把模型错误映射成群内提示，不暴露端点、状态码和原始报错。"""
+    if error.status == 429:
+        return "😥 请求太频繁了，请稍后再试"
+    return "😥 AI 暂时不可用，请稍后再试"
+
 
 chat = on_message(
     rule=chat_allowed, permission=GROUP_ANY, priority=10, block=True
@@ -160,8 +182,9 @@ async def handle_chat(bot: Bot, event: GroupMessageCreateEvent):
             try:
                 result = await workflow.run(text, history)
             except api.LLMError as e:
+                # 具体错误只写日志，群里只给稳定、不含内部信息的提示
                 logger.warning(f"AI 调用失败: {e}")
-                await chat.finish(f"😥 AI 暂时不可用：{e.message}")
+                await chat.finish(_user_facing_error(e))
             except Exception:
                 logger.exception("AI 工作流执行异常")
                 await chat.finish("😥 AI 暂时不可用，请稍后再试")
@@ -208,7 +231,12 @@ async def _on_startup():
     )
     logger.info(
         f"群聊记录：{chat_log.db_path()}，"
-        f"上下文预置最近 {config.AI_CHAT_LOG_RECENT} 条"
+        f"上下文预置上限 {config.AI_CHAT_LOG_RECENT} 条"
+        + (
+            f"（{config.AI_CHAT_LOG_WINDOW_MINUTES} 分钟内）"
+            if config.AI_CHAT_LOG_WINDOW_MINUTES > 0
+            else "（不限时间）"
+        )
     )
     logger.info(f"知识库索引：{config.AI_KNOWLEDGE_LLMS_TXT_URL}")
 
