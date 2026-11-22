@@ -356,7 +356,8 @@ def _ensure_fetch_url_allowed(url: str) -> None:
 
     if pattern.fullmatch(url) is None:
         raise KnowledgeError(
-            "该 URL 不在允许抓取的范围内（AI_KNOWLEDGE_FETCH_URL_REGEX）"
+            "URL 不在允许抓取的范围内（AI_KNOWLEDGE_FETCH_URL_REGEX）："
+            f"{url}"
         )
 
 
@@ -707,11 +708,13 @@ async def _fetch_url(url: str) -> str:
     try:
         _ensure_fetch_url_allowed(normalized)
     except KnowledgeError as e:
+        logger.warning(f"知识库页面抓取被拒绝：{normalized}（{e}）")
         return f"抓取被拒绝：{e}"
 
     try:
         text = await _get_page(normalized)
     except KnowledgeError as e:
+        logger.warning(f"知识库页面抓取失败：{normalized}（{e}）")
         return f"抓取失败：{e}"
 
     return f"URL：{normalized}\n\n{text}"
