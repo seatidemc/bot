@@ -6,6 +6,7 @@ data/
 napcat/
 *.swp
 .claude/
+.DS_Store
 .venv/
 .env.dev
 .env.prod
