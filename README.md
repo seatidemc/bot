@@ -142,15 +142,16 @@ QQ_BOTS='[
 | `GROUP_OPENID` | 空 | 目标群 openid，留空则自动记录 |
 | `QQ_BOTS` | 无 | 机器人凭据 JSON 数组 |
 | `AI_ENABLED` | `true` | 整个 AI 链路唯一开关；`false` 时非指令消息回复「暂未启动AI」；`true` 时启动阶段校验配置 |
+| `AI_DEFAULT_API_KEY` | 空 | 各 agent 未单独配置 `API_KEY` 时的默认 Key |
 | `AI_DEFAULT_BASE_URL` | `https://api.deepseek.com` | 各 agent 未单独配置 `BASE_URL` 时的默认端点 |
 | `AI_DEFAULT_MODEL` | `deepseek-chat` | 各 agent 未单独配置 `MODEL` 时的默认模型名 |
 | `AI_DEFAULT_TEMPERATURE` | `1.0` | 各 agent 未单独配置 `TEMPERATURE` 时的默认温度 |
 | `AI_DEFAULT_MAX_TOKENS` | `800` | 各 agent 未单独配置 `MAX_TOKENS` 时的默认最大输出 token |
 | `AI_DEFAULT_THINKING_EFFORT` | `low` | 各 agent 未单独配置思考强度时的默认值：`none` / `low` / `high` / `max` |
 | `AI_DEFAULT_TIMEOUT` | `60` | 各 agent 未单独配置 `TIMEOUT` 时的默认请求超时秒数 |
-| `AI_ROUTER_*` | 见 `.env.example` | router 模型：`API_KEY`（必填）/ `BASE_URL` / `MODEL` / `TEMPERATURE` / `THINKING_EFFORT` / `MAX_TOKENS` / `TIMEOUT` / `SYSTEM_PROMPT_FILE` / `HISTORY_TURNS` |
-| `AI_CHAT_*` | 见 `.env.example` | chat agent 模型配置，字段同上；`API_KEY` 必填 |
-| `AI_KNOWLEDGE_*` | 见 `.env.example` | knowledge agent 模型配置，`API_KEY` 必填；另有 `LLMS_TXT_URL` / `TOP_K` / `FETCH_TIMEOUT` / `CACHE_TTL` |
+| `AI_ROUTER_*` | 见 `.env.example` | router 模型：`API_KEY`（可回退 `AI_DEFAULT_API_KEY`）/ `BASE_URL` / `MODEL` / `TEMPERATURE` / `THINKING_EFFORT` / `MAX_TOKENS` / `TIMEOUT` / `SYSTEM_PROMPT_FILE` / `HISTORY_TURNS` |
+| `AI_CHAT_*` | 见 `.env.example` | chat agent 模型配置，字段同上；`API_KEY` 可回退 `AI_DEFAULT_API_KEY` |
+| `AI_KNOWLEDGE_*` | 见 `.env.example` | knowledge agent 模型配置，`API_KEY` 可回退 `AI_DEFAULT_API_KEY`；另有 `LLMS_TXT_URL` / `TOP_K` / `FETCH_TIMEOUT` / `CACHE_TTL` |
 | `AI_CHAT_SYSTEM_PROMPT_FILE` | `prompts/chat_prompt.md` | chat agent 系统提示词 |
 | `AI_KNOWLEDGE_SYSTEM_PROMPT_FILE` | `prompts/knowledge_prompt.md` | knowledge agent 系统提示词 |
 | `AI_ROUTER_SYSTEM_PROMPT_FILE` | `prompts/router_prompt.md` | router 系统提示词 |
@@ -194,10 +195,10 @@ QQ_BOTS='[
 - 只支持群聊：@bot 后发文字；开启自动聊天后，未 @ 的普通文字也会进入 AI。私聊消息直接忽略。
 - 群聊记录永久保存在 `data/chat_log.db`（含指令和未 @ 的闲聊），上下文按群共享、不按人隔离；每次请求预置最近 `AI_CHAT_LOG_RECENT` 条，更早的内容由 chat agent 调用 `search_chat_log` 按关键词和最近天数检索。
 - 全局互斥：同一时间只跑一条 AI 链路。处理中收到的 @ 消息会立即回复「上一条消息正在处理中，请稍后再问」，未 @ 的自动聊天消息直接跳过。
-- 启动校验：`AI_ENABLED=true` 时会检查三个模型的 API Key、BASE_URL、MODEL、系统提示词、temperature / timeout，以及 `AI_KNOWLEDGE_LLMS_TXT_URL`；启动时还会实际拉取一次 llms.txt，确认可访问且能解析出条目。任何一项失败都会直接阻止启动，不会留到运行时降级。
+- 启动校验：`AI_ENABLED=true` 时会检查三个模型生效后的 API Key、BASE_URL、MODEL、系统提示词、temperature / timeout，以及 `AI_KNOWLEDGE_LLMS_TXT_URL`；启动时还会实际拉取一次 llms.txt，确认可访问且能解析出条目。任何一项失败都会直接阻止启动，不会留到运行时降级。
 - router 调用失败或输出无法解析时，直接回复 AI 不可用错误，不切换到其他 agent。
 - 每次路由以 INFO 记录 `AI 路由：chat/knowledge`；每次模型调用记录 `LLM 用量[component/model]`：prompt / completion / 思考 token / 缓存命中情况，便于观察成本构成。
-- 三个模型的 API Key 必须分别配置；端点、模型 id、temperature、thinking effort、max tokens、超时和提示词可以分别配置，未配置时回退到 `AI_DEFAULT_*` 默认值。
+- 三个模型的 API Key 可以分别配置；未配置时回退到 `AI_DEFAULT_API_KEY`（三个 agent 共用同一 Key 时只需填这一项）。端点、模型 id、temperature、thinking effort、max tokens、超时和提示词也可以分别配置，未配置时回退到 `AI_DEFAULT_*` 默认值。
 
 三个模型可以指向不同端点或不同模型，例如：
 
@@ -222,7 +223,7 @@ AI_KNOWLEDGE_MODEL=your-model
 AI_KNOWLEDGE_TEMPERATURE=0.3
 ```
 
-三个 API Key 都必须分别填写；未填写某个模型的 `BASE_URL` / `MODEL` 时，会回退到 `AI_DEFAULT_BASE_URL` / `AI_DEFAULT_MODEL`。
+三个 API Key 都可以省略：某个模型未填 `API_KEY` 时回退到 `AI_DEFAULT_API_KEY`；未填写某个模型的 `BASE_URL` / `MODEL` 时，回退到 `AI_DEFAULT_BASE_URL` / `AI_DEFAULT_MODEL`。
 
 ### 知识库（llms.txt + fetch）
 

@@ -1,7 +1,7 @@
 """AI 工作流配置：router / chat / knowledge 三个模型分别可配。
 
-每个模型都必须独立配置自己的 API Key；端点、模型 id、temperature、
-thinking effort、最大输出 token、超时和系统提示词文件可以分别配置，
+每个模型都可以单独配置自己的 API Key；端点、模型 id、temperature、
+thinking effort、最大输出 token、超时和系统提示词文件也可以分别配置，
 未单独配置时回退到 ``AI_DEFAULT_*`` 默认值。
 """
 
@@ -132,7 +132,8 @@ class ModelConfig:
     prompt_file: str
 
 
-# AI_DEFAULT_* 是三个模型共用的 fallback 值；API Key 不参与回退
+# AI_DEFAULT_* 是三个模型共用的 fallback 值
+AI_DEFAULT_API_KEY: str = _text("ai_default_api_key")
 AI_DEFAULT_BASE_URL: str = _text(
     "ai_default_base_url", "https://api.deepseek.com"
 ).rstrip("/")
@@ -151,7 +152,7 @@ def _build_chat() -> ModelConfig:
     )
     return ModelConfig(
         component="chat",
-        api_key=_text("ai_chat_api_key"),
+        api_key=_text("ai_chat_api_key") or AI_DEFAULT_API_KEY,
         base_url=(
             _text("ai_chat_base_url") or AI_DEFAULT_BASE_URL
         ).rstrip("/"),
@@ -178,7 +179,7 @@ _ROUTER_PROMPT_FILE = _text(
 )
 ROUTER: ModelConfig = ModelConfig(
     component="router",
-    api_key=_text("ai_router_api_key"),
+    api_key=_text("ai_router_api_key") or AI_DEFAULT_API_KEY,
     base_url=(
         _text("ai_router_base_url") or AI_DEFAULT_BASE_URL
     ).rstrip("/"),
@@ -202,7 +203,7 @@ _KNOWLEDGE_PROMPT_FILE = _text(
 )
 KNOWLEDGE: ModelConfig = ModelConfig(
     component="knowledge",
-    api_key=_text("ai_knowledge_api_key"),
+    api_key=_text("ai_knowledge_api_key") or AI_DEFAULT_API_KEY,
     base_url=(
         _text("ai_knowledge_base_url") or AI_DEFAULT_BASE_URL
     ).rstrip("/"),
@@ -283,9 +284,9 @@ def validate_agent_configs() -> list[str]:
 
     problems: list[str] = []
     key_hints = {
-        "chat": "AI_CHAT_API_KEY",
-        "router": "AI_ROUTER_API_KEY",
-        "knowledge": "AI_KNOWLEDGE_API_KEY",
+        "chat": "AI_CHAT_API_KEY 或 AI_DEFAULT_API_KEY",
+        "router": "AI_ROUTER_API_KEY 或 AI_DEFAULT_API_KEY",
+        "knowledge": "AI_KNOWLEDGE_API_KEY 或 AI_DEFAULT_API_KEY",
     }
     for model in (ROUTER, CHAT, KNOWLEDGE):
         label = model.component
