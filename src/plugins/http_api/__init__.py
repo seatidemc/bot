@@ -1,4 +1,4 @@
-"""对外 HTTP 接口：其他服务调用后，让 bot 在固定群内发消息。"""
+"""对外 HTTP 接口：其他服务调用后，让 bot 在指定群内发消息。"""
 
 from __future__ import annotations
 
@@ -9,12 +9,14 @@ from nonebot import get_bot, get_driver
 from nonebot.log import logger
 from pydantic import BaseModel
 
-from ..lab_client import get_group_openid
+from ..lab_client import get_group_openid, get_group_openids
 from . import config
 
 
 class SendMessageBody(BaseModel):
     message: str
+    # 未指定时使用默认目标群；发现多个群时必须显式指定
+    group_openid: str | None = None
 
 
 _FORWARDED_HEADERS = ("Forwarded", "X-Forwarded-For", "X-Real-IP")
@@ -36,7 +38,7 @@ def _require_loopback(request: Request) -> None:
 
 
 async def send_group_message(body: SendMessageBody, request: Request):
-    """发送文本消息到 GROUP_OPENID 对应的群。"""
+    """发送文本消息到指定群；未指定时使用默认目标群。"""
     _require_loopback(request)
 
     text = body.message.strip()
@@ -48,12 +50,33 @@ async def send_group_message(body: SendMessageBody, request: Request):
             detail=f"message 超长，最多 {config.HTTP_API_MAX_CHARS} 字符",
         )
 
-    group_openid = get_group_openid()
-    if not group_openid:
-        raise HTTPException(
-            status_code=503,
-            detail="群 openid 未知：请配置 GROUP_OPENID，或先在群里 @bot 发一条消息",
-        )
+    known = get_group_openids()
+    requested = (body.group_openid or "").strip()
+    if requested:
+        if requested not in known:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "未知的群 openid：请先在群里 @bot 发一条消息，"
+                    "或把该群填入 GROUP_OPENID"
+                ),
+            )
+        group_openid = requested
+    else:
+        group_openid = get_group_openid()
+        if not group_openid:
+            if known:
+                raise HTTPException(
+                    status_code=400,
+                    detail="存在多个群，请在请求中指定 group_openid",
+                )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "群 openid 未知：请配置 GROUP_OPENID，"
+                    "或先在群里 @bot 发一条消息"
+                ),
+            )
 
     try:
         bot = get_bot()
@@ -82,10 +105,13 @@ async def health(request: Request):
         ready = bool(bot.ready)
     except ValueError:
         ready = False
+    groups = get_group_openids()
     return {
         "ok": True,
         "bot_ready": ready,
-        "group_configured": bool(get_group_openid()),
+        "group_configured": bool(groups),
+        "group_openids": groups,
+        "default_group_openid": get_group_openid() or None,
     }
 
 

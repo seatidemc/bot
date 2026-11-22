@@ -34,7 +34,7 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `src/plugins/lab_client/__init__.py` | 命令匹配器、未知指令兜底、群 openid 自动发现、状态格式化 |
 | `src/plugins/lab_client/config.py` | 从 NoneBot 配置读取 `BACKEND_BASE_URL`、`GROUP_OPENID` |
 | `src/plugins/lab_client/api.py` | 对后端机器人接口的 HTTP 封装（`ping` / `server-status` / `trigger-one-click-start`），路径直接拼在 `BACKEND_BASE_URL` 后。无鉴权，后端响应格式 `{"data": ...}` / `{"details": "..."}` |
-| `src/plugins/ai/__init__.py` | 群消息入口：聊天记录落库、AI 总开关、群 @ / 自动聊天、限流、全局互斥 |
+| `src/plugins/ai/__init__.py` | 群消息入口：聊天记录落库、AI 总开关、群 @ / 自动聊天、限流、按群互斥 |
 | `src/plugins/ai/config.py` | router（TypeSafe System One）/ chat / knowledge 配置，chat / knowledge 提示词与知识库 URL 加载 |
 | `src/plugins/ai/api.py` | OpenAI Chat Completions 客户端（官方 `openai` SDK，固定 openai-completions 格式），支持工具调用、用量日志（chat / knowledge 使用） |
 | `src/plugins/ai/router.py` | TypeSafe System One 分类：`AsyncTypeSafeClient`、`Choice` 问题、knowledge 概率门槛、用量日志、错误映射 |
@@ -42,7 +42,7 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `src/plugins/ai/tools.py` | 聊天工具（群聊记录检索、实时状态、时间）与知识库工具（llms.txt 检索、受限 fetch） |
 | `src/plugins/ai/workflow.py` | 工作流编排：router → agent |
 | `src/plugins/ai/chat_log.py` | 群聊聊天记录永久存储（SQLite `data/chat_log.db`），供上下文预置和 `recall_chat` 检索 |
-| `src/plugins/http_api/` | 对外 HTTP 接口：`POST /bot/group-message` 向固定群发消息，`GET /bot/health` 探活；仅回环地址，随 NoneBot 的 FastAPI 驱动启动 |
+| `src/plugins/http_api/` | 对外 HTTP 接口：`POST /bot/group-message` 向指定群（或默认群）发消息，`GET /bot/health` 探活；仅回环地址，随 NoneBot 的 FastAPI 驱动启动 |
 | `test_mock_client.py` | [已废弃] 旧版 OneBot v11 模拟客户端，迁移至 adapter-qq 后不再可用 |
 
 ## 配置
@@ -53,7 +53,7 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 |---|---|
 | `DRIVER` | **必填** `~httpx+~websockets`。WS 客户端模式直连 QQ 开放平台 |
 | `BACKEND_BASE_URL` | 后端完整前缀，唯一需要配置的后端参数。本机用 `http://127.0.0.1:45678/bot-v1`；API 路径直接拼在它后面，代码不自动追加 `/bot-v1` |
-| `GROUP_OPENID` | 目标群 openid。首次收到群消息会自动记录并写入 `data/group_openid.txt`，重启后继续生效；也可手动填入固定使用 |
+| `GROUP_OPENID` | 默认目标群 openid。留空时自动记录收到消息的群到 `data/group_openids.json`，支持同时记录多个群；填入后作为 HTTP 接口的默认目标群，该群也会被视为已知群 |
 | `QQ_BOTS` | JSON 数组，含 bot 的 `id`、`token`、`secret`、`intent` |
 | `AI_ENABLED` | 整个 AI 链路唯一开关，默认 `true`；`false` 时不调用任何模型，非指令消息回复「暂未启动AI」 |
 | `AI_DEFAULT_API_KEY` | chat / knowledge 未单独配置 `API_KEY` 时的默认 Key；router 不使用 |
@@ -114,13 +114,13 @@ source .venv/bin/activate && python test_mock_client.py
 
 - `load_plugin("src.plugins.lab_client")` 指定模块名加载；`load_plugins("src.plugins")` 目录扫描无法发现子包
 - 必须 `DRIVER=~httpx+~websockets`；缺少 websockets 则无法建立 WS 连接
-- `data/` 目录需手动 `mkdir`，`data/group_openid.txt` 依赖它存在
+- `data/` 目录需手动 `mkdir`，`data/group_openids.json`、`data/chat_log.db` 依赖它存在
 - `/bot-v1/server-status` 的字段是 camelCase（`uptimeSeconds`、`usagePercent`、`usedCores`、`release.inSeconds` 等），且 `uptimeSeconds`、`memory`、`cpu`、`players.max` 可能为 `null`，格式化前要判空
 - 后端错误响应字段名是 `details` 不是 `error`
 - QQ 官方 API 用 `openid` 标识用户和群，不是 QQ 号
 - 群主开启「获取群内全部消息」后，事件类型从 `GROUP_AT_MESSAGE_CREATE` 变为 `GROUP_MESSAGE_CREATE`；插件统一用 `GroupMessageCreateEvent` 基类，并用 `event.to_me` / `mentions.is_you` 判断是否被 @
 - `QQ_BOTS` 的 intent 只开了 `c2c_group_at_messages`，bot 会收到私聊和群 @ 消息；目前私聊事件直接忽略，只处理群聊
-- `GROUP_OPENID` 首次为空是正常的：启动后在群里 @bot，从日志复制 openid 填入后重启即可
+- `GROUP_OPENID` 首次为空是正常的：启动后在群里发消息，openid 会自动写入 `data/group_openids.json`，无需重启；机器人被拉入多个群时会记录多个 openid，最近发言的群排在末尾
 - `.env`、`data/`、`.venv/` 均被 `.gitignore` 排除
 - router 依赖 `typesafe-sdk`（0.7.x，内部使用 `httpx2`）；它只负责 System One，不参与 openai-completions 调用
 - `typesafe-sdk` 默认在请求体 ≥1024 字节时做 zstd 压缩；阿里云百炼的 System One 端点不识别 `Content-Encoding`，会把 zstd 帧当 JSON 解码并返回 400 `invalid character '(' looking for beginning of value`（zstd 魔数首字节是 `0x28`，即 `(`）。`router.py` 创建客户端时固定传 `compression=False`；不要删除，否则请求体一旦超过 1023 字节就会复现该错误
@@ -170,7 +170,7 @@ SEATIDE_ENV=prod python bot.py   # 生产
 - **agent loop**：工具结果原样写回模型，不截断；工具调用轮数不设上限，由模型自行决定何时给出最终回复。
 - **模型配置**：router 与 chat / knowledge 两套配置互相独立。router 只读取 `AI_ROUTER_*`：`AI_ROUTER_API_KEY` 必填，`BASE_URL` / `MODEL` 未配置时使用 `https://api.typesafe.ai` / `jev-latest`；超时和重试分别由 `AI_ROUTER_TIMEOUT` / `AI_ROUTER_MAX_RETRIES` 控制，不使用 `AI_DEFAULT_*`。chat / knowledge 固定通过官方 `openai` SDK 走 openai-completions 格式；它们的 API Key 未单独配置时回退到 `AI_DEFAULT_API_KEY`；端点、模型 id、temperature、thinking effort、max tokens、超时和系统提示词未配置时回退到 `AI_DEFAULT_*`。
 - **上下文**：只按群隔离，不按人隔离。所有群消息（含指令、未 @ 闲聊）落地到 `data/chat_log.db`；每次请求从该表预置最近 `AI_CHAT_LOG_RECENT` 条、且不早于 `AI_CHAT_LOG_WINDOW_MINUTES` 分钟前的记录作为共享上下文，并以 INFO 记录实际预置条数。router 只从中取最近 `AI_ROUTER_HISTORY_TURNS` 条用户消息（跳过 bot 回复和斜杠指令）用于分类，两个 agent 使用完整上下文；chat agent 可用 `recall_chat` 按关键词和时间范围（`Nd` / `Nh` / `Nm`，默认 `1h`）检索更早的记录；格式无法解析、或起点早于本群最早聊天记录时，工具会返回错误而不是静默调整范围，`0` 表示不限时间。
-- **并发与限流**：全局互斥，同一时间只跑一条 AI 链路；处理中收到的 @ 消息立即回复「上一条消息正在处理中，请稍后再问」，未 @ 的自动聊天消息直接跳过。开启 `AI_GROUP_CHAT_WITHOUT_AT` 后，未 @ 的群消息另按群每分钟限流，回复走被动消息。
+- **并发与限流**：按群互斥，同一个群同一时间只跑一条 AI 链路，不同群可以并行处理；处理中收到的同群 @ 消息立即回复「上一条消息正在处理中，请稍后再问」，同群未 @ 的自动聊天消息直接跳过。开启 `AI_GROUP_CHAT_WITHOUT_AT` 后，未 @ 的群消息另按群每分钟限流，回复走被动消息。聊天记录、上下文和工具检索都按 `group_openid` 隔离，两个群互不串数据。
 - **私聊**：暂不支持。私聊事件会被直接忽略，指令和 AI 都只处理群聊。
 - **日志**：每次路由以 INFO 记录 `AI 路由：chat/knowledge`、System One 的 `confidence` 和两类概率（按概率降序），若返回的 choice 不是概率最高项则追加 WARNING；chat / knowledge 的每次模型调用记录 `LLM 用量[component/model]`（prompt / completion / 思考 token / 缓存命中），router 另行记录 prompt / completion token 用量；每次工具调用以 INFO 记录工具名和传入参数，不记录工具返回。
 - **知识库**：标准 llms.txt 索引（`# 标题`、`> 简介`、`## 章节`、`- [标题](URL): 说明`）；没有链接时把 llms.txt 自身当作可 fetch 的文档。索引与页面按 `AI_KNOWLEDGE_CACHE_TTL` 秒缓存，支持 Markdown、纯文本和 HTML，HTML 会去掉脚本/导航/页脚。
@@ -228,6 +228,6 @@ curl http://127.0.0.1:8081/bot/health
 
 ### 注意
 
-- 目标群固定为 `GROUP_OPENID`，未配置时使用首次收到群消息自动记录的 openid，并持久化到 `data/group_openid.txt`。
+- 默认目标群为 `GROUP_OPENID`；未配置时，只在恰好发现一个群的情况下使用该群，发现多个群时必须通过请求体的 `group_openid` 显式指定。自动发现的群持久化在 `data/group_openids.json`（最近发言的群在末尾）。
 - 服务默认只监听 `127.0.0.1`，不要随意改成 `0.0.0.0`；接口本身也会拒绝非回环来源和带 `Forwarded` / `X-Forwarded-For` / `X-Real-IP` 的请求。
 - QQ 官方接口对主动消息有频率和权限限制（被动回复 5 分钟内 5 条、主动推送需平台开通能力）。若返回 502，先查开放平台的消息权限与配额。

@@ -48,13 +48,17 @@
 
 ## POST /bot/group-message
 
-向固定群发送一条纯文本消息。目标群取自 `GROUP_OPENID`；未配置时使用首次收到群消息自动记录的 openid（持久化在 `data/group_openid.txt`）。
+向指定群发送一条纯文本消息。
+
+- 传 `group_openid` 时发送到该群，但它必须已经“已知”：配置在 `GROUP_OPENID` 中，或机器人收到过该群消息（自动记录在 `data/group_openids.json`）。
+- 不传时使用默认目标群：`GROUP_OPENID` 优先；未配置时仅在只发现一个群时使用它。发现多个群又未配置 `GROUP_OPENID` 时会返回 400，必须显式指定。
 
 ### 请求
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `message` | string | 是 | 消息文本，服务端会 `strip()`；最大 `HTTP_API_MAX_CHARS`（默认 2000）字符 |
+| `group_openid` | string | 否 | 目标群 openid，必须是已知群；省略时使用默认目标群 |
 
 ```bash
 curl -X POST http://127.0.0.1:8081/bot/group-message \
@@ -84,10 +88,12 @@ curl -X POST http://127.0.0.1:8081/bot/group-message \
 |---|---|---|
 | 400 | `message 不能为空` | `message` 去除空白后为空 |
 | 400 | `message 超长，最多 2000 字符` | 长度超过 `HTTP_API_MAX_CHARS` |
+| 400 | `未知的群 openid：...` | 显式传入的 `group_openid` 不在已知群列表中 |
+| 400 | `存在多个群，请在请求中指定 group_openid` | 未传 `group_openid`，且未配置 `GROUP_OPENID`、已发现多个群 |
 | 403 | `仅允许本机访问` | 非回环来源或带转发头 |
 | 422 | FastAPI 校验信息 | 缺少 `message` 字段、类型不是字符串 |
 | 502 | `QQ 发送失败：<原因>` | QQ 开放平台返回错误（权限、频率限制等） |
-| 503 | `群 openid 未知：请配置 GROUP_OPENID，或先在群里 @bot 发一条消息` | 尚未确定目标群 |
+| 503 | `群 openid 未知：请配置 GROUP_OPENID，或先在群里 @bot 发一条消息` | 尚未发现任何群，也没有配置默认目标群 |
 | 503 | `QQ 机器人尚未连接` | 没有已连接的 bot 实例 |
 | 503 | `QQ 机器人尚未就绪` | bot 已连接但 `ready` 为 false |
 
@@ -113,7 +119,9 @@ curl http://127.0.0.1:8081/bot/health
 {
   "ok": true,
   "bot_ready": true,
-  "group_configured": true
+  "group_configured": true,
+  "group_openids": ["xxxxxxxx"],
+  "default_group_openid": "xxxxxxxx"
 }
 ```
 
@@ -121,7 +129,9 @@ curl http://127.0.0.1:8081/bot/health
 |---|---|---|
 | `ok` | boolean | 固定为 `true`，表示 HTTP 服务本身可用 |
 | `bot_ready` | boolean | QQ 机器人是否已连接且就绪 |
-| `group_configured` | boolean | 是否已确定目标群 openid |
+| `group_configured` | boolean | 是否至少知道一个群（配置值或自动发现） |
+| `group_openids` | string[] | 已知的全部群 openid，配置值在前 |
+| `default_group_openid` | string \| null | 未指定群时发送接口使用的目标；多个群且未配置 `GROUP_OPENID` 时为 `null` |
 
 ### 错误响应
 

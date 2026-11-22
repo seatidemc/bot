@@ -139,7 +139,7 @@ QQ_BOTS='[
 | `ENVIRONMENT` | `dev` | 由配置文件设置 |
 | `LOG_LEVEL` | `DEBUG` / `INFO` | 日志级别 |
 | `BACKEND_BASE_URL` | `http://127.0.0.1:45678/bot-v1` | 后端完整前缀，需包含 `/bot-v1`；bot 不会自动追加路径段 |
-| `GROUP_OPENID` | 空 | 目标群 openid，留空则自动记录 |
+| `GROUP_OPENID` | 空 | 默认目标群 openid；留空则自动记录收到的群（支持多个） |
 | `QQ_BOTS` | 无 | 机器人凭据 JSON 数组 |
 | `AI_ENABLED` | `true` | 整个 AI 链路唯一开关；`false` 时非指令消息回复「暂未启动AI」；`true` 时启动阶段校验配置 |
 | `AI_DEFAULT_API_KEY` | 空 | chat / knowledge 未单独配置 `API_KEY` 时的默认 Key；router 不使用 |
@@ -168,7 +168,7 @@ QQ_BOTS='[
 | `HOST` / `PORT` | `127.0.0.1:8081` | HTTP 服务监听地址，建议只监听本机 |
 | `HTTP_API_MAX_CHARS` | `2000` | 接口单条消息最大字符数 |
 
-群 openid 不需要手动获取：机器人收到第一条群消息后会打印并写入 `data/group_openid.txt`，重启后继续生效。
+群 openid 不需要手动获取：机器人收到群消息后会打印并写入 `data/group_openids.json`，重启后继续生效。机器人被拉入多个群时会记录多个 openid，AI 上下文和聊天记录按群隔离，互不干扰。
 
 ## 命令
 
@@ -195,7 +195,7 @@ QQ_BOTS='[
 
 - 只支持群聊：@bot 后发文字；开启自动聊天后，未 @ 的普通文字也会进入 AI。私聊消息直接忽略。
 - 群聊记录永久保存在 `data/chat_log.db`（含指令和未 @ 的闲聊），上下文按群共享、不按人隔离；每次请求预置最近 `AI_CHAT_LOG_RECENT` 条，更早的内容由 chat agent 调用 `recall_chat` 按关键词和时间范围（如 `30m` / `12h` / `7d`）检索。
-- 全局互斥：同一时间只跑一条 AI 链路。处理中收到的 @ 消息会立即回复「上一条消息正在处理中，请稍后再问」，未 @ 的自动聊天消息直接跳过。
+- 按群互斥：同一个群同一时间只跑一条 AI 链路，不同群可以并行处理。处理中收到的同群 @ 消息会立即回复「上一条消息正在处理中，请稍后再问」，同群未 @ 的自动聊天消息直接跳过。聊天记录、上下文和工具检索按群隔离。
 - 启动校验：`AI_ENABLED=true` 时会检查 router 的 API Key、BASE_URL、MODEL、timeout、knowledge 概率门槛，以及 chat / knowledge 的 API Key、BASE_URL、MODEL、系统提示词、temperature / timeout 和 `AI_KNOWLEDGE_LLMS_TXT_URL`；启动时还会实际拉取一次 llms.txt，确认可访问且能解析出条目。任何一项失败都会直接阻止启动，不会留到运行时降级。
 - router 通过 `typesafe-sdk` 调用 System One，不使用 openai-completions。若判为 knowledge 但 knowledge 概率低于 `AI_ROUTER_MIN_KNOWLEDGE_PROBABILITY`（默认 0.6），按 chat 处理，避免把闲聊送进知识库 agent。调用失败（超时 / 401 / 429 等）或返回的 intent 不在 `chat` / `knowledge` 中时不切换到其他 agent；具体错误只写日志，群内只回复统一提示（429 为「请求太频繁」，其余为「AI 暂时不可用」），不暴露内部报错。
 - chat / knowledge 固定使用 OpenAI Chat Completions 格式（openai-completions），通过官方 `openai` SDK 调用；对应的 `AI_*_BASE_URL` 填 API 根地址（如 `https://api.deepseek.com` 或 `https://example.com/v1`），SDK 会自动拼接 `/chat/completions`。
@@ -282,6 +282,8 @@ AI_GROUP_CHAT_PER_MINUTE=5
 
 ### 发送群消息
 
+请求体字段：`message`（必填，纯文本）、`group_openid`（可选，目标群）。不传 `group_openid` 时使用默认目标群（`GROUP_OPENID`，或唯一自动发现的群）；发现多个群时必须显式指定。
+
 ```bash
 curl -X POST http://127.0.0.1:8081/bot/group-message \
   -H "Content-Type: application/json" \
@@ -298,23 +300,23 @@ curl -X POST http://127.0.0.1:8081/bot/group-message \
 
 | 状态码 | 含义 |
 |---|---|
-| 400 | message 为空或超过 `HTTP_API_MAX_CHARS` |
+| 400 | message 为空或超过 `HTTP_API_MAX_CHARS`；群 openid 未知；发现多个群但未指定 `group_openid` |
 | 403 | 非本机请求，或携带了转发头 |
 | 502 | QQ 接口发送失败（无权限、频控等） |
-| 503 | 机器人未连接、群 openid 未知 |
+| 503 | 机器人未连接、尚未发现任何群 |
 
 ### 探活
 
 ```bash
 curl http://127.0.0.1:8081/bot/health
-# {"ok": true, "bot_ready": true, "group_configured": true}
+# {"ok": true, "bot_ready": true, "group_configured": true, "group_openids": ["..."], "default_group_openid": "..."}
 ```
 
-同样只允许本机访问。
+同样只允许本机访问。`group_openids` 是已知的全部群，`default_group_openid` 是未指定群时实际使用的目标（存在多个群且未配置 `GROUP_OPENID` 时为 `null`）。
 
 ### 注意
 
-- 群 openid 未知时先让群里 @bot 发一条消息，或手动填写 `GROUP_OPENID`
+- 群 openid 未知时先让群里 @bot 发一条消息，或手动填写 `GROUP_OPENID`；多群场景下调用发送接口需带上 `group_openid`
 - QQ 对主动消息有频控和权限要求，无权限时接口返回 502
 - 主动消息配额以开放平台后台为准；被动回复为 5 分钟内最多 5 条
 - 接口不提供外网访问；不要改 `HOST` 或在前面加反向代理，`Forwarded` / `X-Forwarded-For` / `X-Real-IP` 请求会被拒绝
@@ -323,7 +325,7 @@ curl http://127.0.0.1:8081/bot/health
 
 | 路径 | 内容 |
 |---|---|
-| `data/group_openid.txt` | 自动记录的群 openid |
+| `data/group_openids.json` | 自动记录的群 openid 列表（最近发言的群在末尾） |
 
 `data/`、`.env.dev`、`.env.prod`、`.venv/` 均在 `.gitignore` 中。
 

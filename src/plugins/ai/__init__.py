@@ -47,8 +47,18 @@ def _chat_allowed(event) -> bool:
 
 chat_allowed = Rule(_chat_allowed)
 
-# 全局互斥：同一时间只允许一条 AI 链路在跑
-_chain_lock = asyncio.Lock()
+# 按群互斥：同一个群同一时间只跑一条 AI 链路，不同群之间互不影响
+_group_locks: dict[str, asyncio.Lock] = {}
+
+
+def _group_lock(group_openid: str) -> asyncio.Lock:
+    """取得某个群专用的锁；首次使用时创建。"""
+    lock = _group_locks.get(group_openid)
+    if lock is None:
+        lock = asyncio.Lock()
+        _group_locks[group_openid] = lock
+    return lock
+
 
 _auto_chat_times: dict[str, deque[float]] = {}
 _auto_chat_lock = asyncio.Lock()
@@ -156,10 +166,12 @@ async def handle_chat(bot: Bot, event: GroupMessageCreateEvent):
         await chat.finish("暂未启动AI")
         return
 
-    if _chain_lock.locked():
+    lock = _group_lock(event.group_openid)
+
+    if lock.locked():
         if addressed:
             await chat.finish("上一条消息正在处理中，请稍后再问")
-        logger.debug("AI 链路正在处理其他消息，跳过未 @ 的群消息")
+        logger.debug("本群 AI 链路正在处理其他消息，跳过未 @ 的群消息")
         return
 
     if not addressed:
@@ -168,13 +180,13 @@ async def handle_chat(bot: Bot, event: GroupMessageCreateEvent):
                 f"自动聊天达到每分钟上限 {config.AI_GROUP_CHAT_PER_MINUTE}，跳过"
             )
             return
-        # 限流检查期间可能已有链路启动，再确认一次
-        if _chain_lock.locked():
-            logger.debug("AI 链路正在处理其他消息，跳过未 @ 的群消息")
+        # 限流检查期间可能已有本群链路启动，再确认一次
+        if lock.locked():
+            logger.debug("本群 AI 链路正在处理其他消息，跳过未 @ 的群消息")
             return
 
     # 检查与获取之间没有 await，保证互斥判断和拿锁是原子的
-    async with _chain_lock:
+    async with lock:
         # 工具需要知道当前群；私聊不进入本插件，所以一定有值
         token = tools.set_group_context(event.group_openid)
         try:

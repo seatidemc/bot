@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -21,30 +22,76 @@ from . import config
 
 # ─── 启动初始化 ──────────────────────────────────────────────
 
-# 自动发现的群 openid：首次收到群消息时记录，并持久化到 data/group_openid.txt
-_GROUP_OPENID_FILE = Path("data/group_openid.txt")
+# 自动发现的群 openid：最后发言的群排在最后，持久化到
+# data/group_openids.json，重启后继续生效。机器人可以同时待在多个群里。
+_GROUP_OPENID_FILE = Path("data/group_openids.json")
 
 
-def _load_discovered_group_openid() -> str:
+def _load_discovered_group_openids() -> list[str]:
     try:
-        return _GROUP_OPENID_FILE.read_text(encoding="utf-8").strip()
+        raw = _GROUP_OPENID_FILE.read_text(encoding="utf-8")
     except OSError:
-        return ""
+        return []
+
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        logger.warning(f"{_GROUP_OPENID_FILE} 不是合法 JSON，忽略")
+        return []
+
+    if not isinstance(data, list):
+        logger.warning(f"{_GROUP_OPENID_FILE} 不是数组，忽略")
+        return []
+
+    groups: list[str] = []
+    for item in data:
+        openid = item.strip() if isinstance(item, str) else ""
+        if openid and openid not in groups:
+            groups.append(openid)
+    return groups
 
 
-_discovered_group_openid: str = _load_discovered_group_openid()
+_discovered_group_openids: list[str] = _load_discovered_group_openids()
 
 
-def _get_group_openid() -> str:
-    """获取目标群 openid，优先使用配置值，其次自动发现的值。"""
+def _save_discovered_group_openids(groups: list[str]) -> None:
+    """原子写入磁盘；失败时只保留内存状态。"""
+    try:
+        _GROUP_OPENID_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _GROUP_OPENID_FILE.with_name(_GROUP_OPENID_FILE.name + ".tmp")
+        tmp.write_text(
+            json.dumps(groups, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        tmp.replace(_GROUP_OPENID_FILE)
+    except OSError:
+        logger.warning(
+            f"写入 {_GROUP_OPENID_FILE} 失败，仅保存在内存中"
+        )
+
+
+def get_group_openids() -> list[str]:
+    """当前已知的全部群 openid：配置值在前，自动发现的按活跃顺序。"""
+    groups: list[str] = []
     if config.GROUP_OPENID:
-        return config.GROUP_OPENID
-    return _discovered_group_openid
+        groups.append(config.GROUP_OPENID)
+    for openid in _discovered_group_openids:
+        if openid not in groups:
+            groups.append(openid)
+    return groups
 
 
 def get_group_openid() -> str:
-    """对外暴露：当前目标群 openid（配置优先，其次自动发现）。"""
-    return _get_group_openid()
+    """默认目标群：配置值优先；未配置时仅在只发现一个群的情况下返回它。
+
+    发现多个群且未配置 ``GROUP_OPENID`` 时无法确定默认目标，返回空字符串，
+    调用方应要求显式指定群。
+    """
+    if config.GROUP_OPENID:
+        return config.GROUP_OPENID
+    if len(_discovered_group_openids) == 1:
+        return _discovered_group_openids[0]
+    return ""
 
 
 # ─── 权限：仅群聊 ────────────────────────────────────────────
@@ -91,20 +138,30 @@ _group_probe = on_message(priority=1, block=False)
 @_group_probe.handle()
 async def _probe_group(event: GroupMessageCreateEvent):
     """收到任意群消息时记录群 openid，供 HTTP 接口发消息使用。"""
-    global _discovered_group_openid
+    global _discovered_group_openids
     logger.debug(
         f"群消息: {type(event).__name__} to_me={getattr(event, 'to_me', False)}"
     )
     openid = getattr(event, "group_openid", "")
-    if not openid or openid == _discovered_group_openid:
+    if not openid:
         return
-    _discovered_group_openid = openid
-    try:
-        _GROUP_OPENID_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _GROUP_OPENID_FILE.write_text(openid + "\n", encoding="utf-8")
-    except OSError:
-        logger.warning("写入 data/group_openid.txt 失败，仅保存在内存中")
-    logger.info(f"已记录群 openid: {openid}（也可填入 GROUP_OPENID 固定使用）")
+    # 最近发言的群已经在末尾，无需改写文件
+    if _discovered_group_openids and _discovered_group_openids[-1] == openid:
+        return
+
+    is_new = openid not in _discovered_group_openids
+    groups = [group for group in _discovered_group_openids if group != openid]
+    groups.append(openid)
+    _discovered_group_openids = groups
+    _save_discovered_group_openids(groups)
+    message = (
+        f"已记录群 openid: {openid}（当前共 {len(groups)} 个群；"
+        "也可填入 GROUP_OPENID 固定使用）"
+    )
+    if is_new:
+        logger.info(message)
+    else:
+        logger.debug(message)
 
 
 # ─── 状态格式化 ──────────────────────────────────────────────
