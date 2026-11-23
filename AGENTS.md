@@ -39,7 +39,7 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `src/plugins/ai/api.py` | OpenAI Chat Completions 客户端（官方 `openai` SDK，固定 openai-completions 格式），支持工具调用、用量日志（chat / knowledge 使用） |
 | `src/plugins/ai/router.py` | TypeSafe System One 分类：`AsyncTypeSafeClient`、`Choice` 问题、knowledge 概率门槛、用量日志、错误映射 |
 | `src/plugins/ai/agents.py` | 两个 agent 的简单 agent loop（工具调用、结果回填，轮数由模型自行结束） |
-| `src/plugins/ai/tools.py` | 聊天工具（群聊记录检索、实时状态、时间）与知识库工具（llms.txt 检索、受限 fetch） |
+| `src/plugins/ai/tools.py` | 聊天工具（群聊记录检索、实时状态、时间）与知识库工具（llms.txt 索引 + 正文全文检索、受限 fetch） |
 | `src/plugins/ai/workflow.py` | 工作流编排：router → agent |
 | `src/plugins/ai/chat_log.py` | 群聊聊天记录永久存储（SQLite `data/chat_log.db`），供上下文预置和 `recall_chat` 检索 |
 | `src/plugins/http_api/` | 对外 HTTP 接口：`POST /bot/group-message` 向指定群（或默认群）发消息，`GET /bot/health` 探活；仅回环地址，随 NoneBot 的 FastAPI 驱动启动 |
@@ -166,7 +166,7 @@ SEATIDE_ENV=prod python bot.py   # 生产
 - **启动校验**：`AI_ENABLED=true` 时在启动阶段检查 router 的 API Key、BASE_URL、MODEL、timeout、knowledge 概率门槛，以及 chat / knowledge 生效后的 API Key、BASE_URL、MODEL、系统提示词、temperature / timeout，还有 `AI_KNOWLEDGE_LLMS_TXT_URL` 是否存在且为 http(s) URL；启动时还会实际拉取一次 llms.txt，确认可访问且能解析出条目。任何一项不通过都会抛出 `RuntimeError`，直接阻止启动，不把配置错误留到运行时。
 - **router**：通过 `typesafe-sdk` 调用 TypeSafe System One（`POST /v1/systemone`），不走 openai-completions。请求的 `state` 是 `{"recent_conversation": 最近 AI_ROUTER_HISTORY_TURNS 条用户消息（自动跳过 bot 回复和斜杠指令）, "latest_message": 最新消息}`，`questions` 只有一个名为 `intent` 的 `Choice` 问题，criteria 固定为 `chat` / `knowledge`，不发送 `instructions` 或其他提示词。取 `response.choices["intent"].choice`，并校验必须严格等于两个 intent 之一（无别名、无兜底解析）；若 choice 为 `knowledge` 且 `knowledge` 概率低于 `AI_ROUTER_MIN_KNOWLEDGE_PROBABILITY`（默认 0.6，0 表示不启用），按 `chat` 处理；调用失败、答案类型不是 choice 或 intent 未知时直接报错，不切换到其他 agent。System One 没有 temperature / thinking effort / max_tokens，重试由 SDK `RetryPolicy` 负责。
 - **chat agent**：系统提示词默认 `prompts/chat_prompt.md`，工具只有 `recall_chat`。乱码、无意义内容等无法归入知识库的消息也由它处理。
-- **knowledge agent**：系统提示词默认 `prompts/knowledge_prompt.md`，工具为 `search_knowledge`、`fetch_doc`、`get_server_status`、`get_current_time`。`search_knowledge` 拉取 `AI_KNOWLEDGE_LLMS_TXT_URL` 指向的 llms.txt 并检索条目（不传 query 时返回全部条目，`limit` 控制最多返回条数，检索默认 5 条）；`fetch_doc` 只允许抓取索引中出现过的 URL，返回 Markdown / 文本 / HTML 提取后的正文。需要实时服务器状态或当前时间的场景也由 knowledge agent 负责。
+- **knowledge agent**：系统提示词默认 `prompts/knowledge_prompt.md`，工具为 `search_knowledge`、`fetch_doc`、`get_server_status`、`get_current_time`。`search_knowledge` 拉取 `AI_KNOWLEDGE_LLMS_TXT_URL` 指向的 llms.txt，并**对标题、章节、说明和正文做全文检索**：按 TTL 并发抓取索引内全部页面正文，用关键词权重 + IDF 打分，返回匹配条目、URL 和命中位置的正文摘要（不传 query 时返回全部条目，`limit` 控制最多返回条数，检索默认 5 条）。中文查询会拆成二元组，问句虚词（「如何」「怎么」等）不参与打分；`fetch_doc` 只允许抓取索引中出现过的 URL，返回 Markdown / 文本 / HTML 提取后的正文。需要实时服务器状态或当前时间的场景也由 knowledge agent 负责。
 - **提示词文件**：chat / knowledge 各用一个独立的提示词文件，支持 `{{include: shared/xxx.md}}` 复用共享片段：路径相对当前提示词文件所在目录，支持嵌套，循环与最大 8 层嵌套会报错；展开失败会使系统提示词为空，由启动校验直接阻止启动。router 不使用提示词文件，System One 请求只发送 state 和 Choice 问题。
 - **agent loop**：工具结果原样写回模型，不截断；工具调用轮数不设上限，由模型自行决定何时给出最终回复。模型偶发只返回空正文（没有工具调用）时会原样重试最多 2 次，每次以 WARNING 记录 `finish_reason`；仍为空则由上层回复兜底文案。
 - **模型配置**：router 与 chat / knowledge 两套配置互相独立。router 只读取 `AI_ROUTER_*`：`AI_ROUTER_API_KEY` 必填，`BASE_URL` / `MODEL` 未配置时使用 `https://api.typesafe.ai` / `jev-latest`；超时和重试分别由 `AI_ROUTER_TIMEOUT` / `AI_ROUTER_MAX_RETRIES` 控制，不使用 `AI_DEFAULT_*`。chat / knowledge 固定通过官方 `openai` SDK 走 openai-completions 格式；它们的 API Key 未单独配置时回退到 `AI_DEFAULT_API_KEY`；端点、模型 id、temperature、thinking effort、max tokens、超时和系统提示词未配置时回退到 `AI_DEFAULT_*`。
@@ -175,7 +175,7 @@ SEATIDE_ENV=prod python bot.py   # 生产
 - **私聊**：暂不支持。私聊事件会被直接忽略，指令和 AI 都只处理群聊。
 - **回复格式**：AI 最终回复通过 `MessageSegment.markdown` 以 QQ 原生 Markdown（`msg_type=2`）发送，`AI_MARKDOWN_REPLY=false` 时发纯文本；Markdown 发送失败会以 WARNING 记录原因并自动回退纯文本。QQ 原生 Markdown 只支持标题、粗体/斜体/删除线、链接、图片、列表、引用、分割线等有限语法，模型输出代码块时可能按普通文本显示。指令回复和 HTTP 接口仍是纯文本。
 - **日志**：每次路由以 INFO 记录 `AI 路由：chat/knowledge`、System One 的 `confidence` 和两类概率（按概率降序），若返回的 choice 不是概率最高项则追加 WARNING；chat / knowledge 的每次模型调用记录 `LLM 用量[component/model]`（prompt / completion / 思考 token / 缓存命中），router 另行记录 prompt / completion token 用量；每次工具调用以 INFO 记录工具名和传入参数，不记录工具返回；最终回复以 INFO 记录 `AI 回复[intent][群 openid]：<完整内容>`，不截断。
-- **知识库**：标准 llms.txt 索引（`# 标题`、`> 简介`、`## 章节`、`- [标题](URL): 说明`）；没有链接时把 llms.txt 自身当作可 fetch 的文档。索引与页面按 `AI_KNOWLEDGE_CACHE_TTL` 秒缓存，支持 Markdown、纯文本和 HTML，HTML 会去掉脚本/导航/页脚。
+- **知识库**：标准 llms.txt 索引（`# 标题`、`> 简介`、`## 章节`、`- [标题](URL): 说明`）；没有链接时把 llms.txt 自身当作可 fetch 的文档。索引、页面正文和全文检索用的正文集合都按 `AI_KNOWLEDGE_CACHE_TTL` 秒缓存，支持 Markdown、纯文本和 HTML，HTML 会去掉脚本/导航/页脚。检索需要全部页面正文，因此知识库页面不宜过多；单页抓取失败只跳过该页，不影响其他条目。
 - **抓取安全**：`fetch_doc` 只允许抓取 llms.txt 索引中出现过的 URL，以及 http(s) 协议；配置 `AI_KNOWLEDGE_FETCH_URL_REGEX` 后，URL 还必须完整匹配该正则（作为额外白名单），留空则不额外限制。重定向逐跳校验协议和正则；若文档会 301 到其他域名，正则必须同时放行目标域名（例如 Seatide 文档从 `seatidemc.github.io` 301 到 `http://seatide.net`）。不再限制回环/内网地址。
 - 调用失败（超时 / 401 / 402 / 429 / router 失败 / System One 返回未知 intent）不进行 agent 切换；具体错误只写日志，群里回复统一提示（429 回「请求太频繁」，其余回「AI 暂时不可用」），不暴露端点、状态码或原始报错。
 

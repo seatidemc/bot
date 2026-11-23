@@ -1,8 +1,9 @@
 """agent 可调用的工具集：聊天工具与知识库工具相互独立。
 
 知识库采用 llms.txt + fetch 的形式：
-- ``search_knowledge`` 拉取并检索 llms.txt 索引，返回匹配条目的标题、URL 和说明；
-  不传 query 时列出全部条目；
+- ``search_knowledge`` 先读 llms.txt 索引，再按 TTL 抓取索引内页面的正文，
+  在标题、章节、说明和正文上做全文检索，返回匹配条目、URL 和正文摘要；
+  不传 query 时只列出索引条目；
 - ``fetch_doc`` 只允许抓取索引中出现过的 URL，返回页面正文。
 """
 
@@ -10,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
 import time
 from collections import OrderedDict
@@ -245,6 +247,15 @@ class KnowledgeIndex:
     entries: tuple[KnowledgeEntry, ...]
 
 
+@dataclass(frozen=True)
+class KnowledgeDoc:
+    """索引条目 + 抓取到的正文；正文为空表示该页抓取失败。"""
+
+    entry: KnowledgeEntry
+    text: str = ""
+    headings: tuple[str, ...] = ()
+
+
 _H1_RE = re.compile(r"^#\s+(.+?)\s*$")
 _H2_RE = re.compile(r"^#{2,6}\s+(.+?)\s*$")
 _BLOCKQUOTE_RE = re.compile(r"^>\s?(.*)$")
@@ -260,6 +271,13 @@ _WORD_SPLIT = re.compile(
 
 _INDEX_CACHE: tuple[float, KnowledgeIndex] | None = None
 _INDEX_LOCK = asyncio.Lock()
+
+# 全量正文缓存：search_knowledge 需要在正文里检索，而知识库页面数量很少，
+# 因此按 TTL 并发抓取索引中的全部页面，缓存 (时间, 索引 URL, 条目 URL 列表, 正文)
+_DOCS_CACHE: (
+    "tuple[float, str, tuple[str, ...], tuple[KnowledgeDoc, ...]] | None"
+) = None
+_DOCS_LOCK = asyncio.Lock()
 
 _PAGE_CACHE: "OrderedDict[str, tuple[float, str]]" = OrderedDict()
 _PAGE_CACHE_MAX = 64
@@ -635,66 +653,397 @@ async def _get_page(url: str) -> str:
     return text
 
 
-def _query_terms(query: str) -> set[str]:
-    """把查询拆成关键词；中文额外拆成二元组，避免没有空格时无法命中。"""
+_MD_HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$", re.MULTILINE)
+
+
+def _normalize_doc_text(text: str) -> str:
+    """压缩正文中的多余空白，保留段落结构供摘要截取。"""
+    text = re.sub(r"[ \t\f\v]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _doc_headings(text: str) -> tuple[str, ...]:
+    """提取 Markdown 标题；标题命中通常比正文命中更能说明页面主题。"""
+    return tuple(
+        match.strip() for match in _MD_HEADING_RE.findall(text) if match.strip()
+    )
+
+
+async def _load_doc(entry: KnowledgeEntry) -> KnowledgeDoc:
+    try:
+        text = await _get_page(entry.url)
+    except KnowledgeError as e:
+        logger.warning(f"知识库正文获取失败：{entry.url}（{e}）")
+        return KnowledgeDoc(entry=entry)
+    except Exception as e:  # pragma: no cover - 防御性兜底
+        logger.warning(
+            f"知识库正文获取失败：{entry.url}"
+            f"（{e.__class__.__name__}: {e}）"
+        )
+        return KnowledgeDoc(entry=entry)
+    normalized = _normalize_doc_text(text)
+    return KnowledgeDoc(
+        entry=entry,
+        text=normalized,
+        headings=_doc_headings(normalized),
+    )
+
+
+async def _get_docs(
+    index: KnowledgeIndex,
+) -> tuple[KnowledgeDoc, ...]:
+    """按 TTL 抓取索引中全部页面的正文，供全文检索使用。"""
+    global _DOCS_CACHE
+
+    ttl = config.AI_KNOWLEDGE_CACHE_TTL
+    urls = tuple(entry.url for entry in index.entries)
+
+    def _cached() -> tuple[KnowledgeDoc, ...] | None:
+        cached = _DOCS_CACHE
+        if (
+            cached is not None
+            and cached[1] == index.source_url
+            and cached[2] == urls
+            and ttl > 0
+            and time.monotonic() - cached[0] < ttl
+        ):
+            return cached[3]
+        return None
+
+    docs = _cached()
+    if docs is not None:
+        return docs
+
+    async with _DOCS_LOCK:
+        docs = _cached()
+        if docs is not None:
+            return docs
+
+        docs = tuple(
+            await asyncio.gather(
+                *(_load_doc(entry) for entry in index.entries)
+            )
+        )
+        _DOCS_CACHE = (
+            time.monotonic(),
+            index.source_url,
+            urls,
+            docs,
+        )
+        loaded = sum(1 for doc in docs if doc.text)
+        logger.info(
+            f"知识库正文已加载：{loaded}/{len(docs)} 篇"
+            f"（{index.source_url}）"
+        )
+        return docs
+
+
+# 问句虚词和功能词不参与打分，否则「如何申请白名单」会被「如何开启服务器」
+# 这类只有虚词重合的条目抢走
+_QUERY_STOPWORDS = frozenset(
+    {
+        "如何",
+        "怎么",
+        "怎样",
+        "什么",
+        "哪些",
+        "哪里",
+        "哪个",
+        "为何",
+        "是否",
+        "可以",
+        "能否",
+        "请问",
+        "需要",
+        "一个",
+        "一下",
+        "有没有",
+        "没有",
+        "我们",
+        "你们",
+        "他们",
+        "这个",
+        "那个",
+        "这里",
+        "那里",
+        "问题",
+        "关于",
+        "有关",
+        "以及",
+        "还是",
+        "或者",
+        "但是",
+        "因为",
+        "如果",
+        "已经",
+        "就是",
+        "不是",
+        "自己",
+        "时候",
+        "吗",
+        "呢",
+        "吧",
+        "的",
+        "了",
+        "是",
+        "在",
+        "和",
+        "与",
+        "或",
+        # 英文问句与功能词
+        "how",
+        "what",
+        "why",
+        "when",
+        "where",
+        "which",
+        "who",
+        "whom",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "do",
+        "does",
+        "did",
+        "can",
+        "could",
+        "would",
+        "should",
+        "will",
+        "shall",
+        "may",
+        "might",
+        "must",
+        "the",
+        "a",
+        "an",
+        "to",
+        "of",
+        "in",
+        "on",
+        "at",
+        "for",
+        "and",
+        "or",
+        "but",
+        "not",
+        "my",
+        "me",
+        "i",
+        "you",
+        "we",
+        "they",
+        "it",
+        "this",
+        "that",
+        "these",
+        "those",
+        "there",
+        "here",
+        "please",
+        "with",
+        "about",
+        "from",
+        "have",
+        "has",
+        "had",
+    }
+)
+
+_SNIPPET_BEFORE = 80
+_SNIPPET_AFTER = 160
+
+
+def _query_terms(query: str) -> dict[str, float]:
+    """把查询拆成带权重的检索词；中文额外拆成二元组。
+
+    完整词权重高于二元组，保证「白名单」这类专有词优先命中。
+    """
     text = query.strip().lower()
     if not text:
-        return set()
+        return {}
 
-    terms: set[str] = set()
+    terms: dict[str, float] = {}
+
+    def add(term: str, weight: float) -> None:
+        term = term.strip()
+        if len(term) < 2 or term in _QUERY_STOPWORDS:
+            return
+        if weight > terms.get(term, 0.0):
+            terms[term] = weight
+
     for token in _WORD_SPLIT.split(text):
-        token = token.strip()
-        if len(token) >= 2:
-            terms.add(token)
+        add(token, 2.0)
 
     for run in _CJK_RUN.findall(text):
         if len(run) == 1:
-            terms.add(run)
+            if run not in _QUERY_STOPWORDS:
+                terms[run] = max(terms.get(run, 0.0), 0.5)
+            continue
         for i in range(len(run) - 1):
-            terms.add(run[i: i + 2])
+            add(run[i: i + 2], 1.0)
 
-    if 2 <= len(text) <= 40:
-        terms.add(text)
     return terms
 
 
-def _search_entries(
-    entries: tuple[KnowledgeEntry, ...], query: str, top_k: int
-) -> list[KnowledgeEntry]:
+def _doc_snippet(doc: KnowledgeDoc, matched: dict[str, float]) -> str:
+    """截取正文中命中检索词的位置附近的内容作为摘要。"""
+    body = doc.text
+    if not body:
+        return _plain_preview(doc.entry.description)[:300]
+
+    lowered = body.lower()
+    positions: list[tuple[float, int]] = []
+    for term, weight in matched.items():
+        pos = lowered.find(term)
+        if pos < 0:
+            continue
+        positions.append((weight * min(lowered.count(term), 6), pos))
+    if not positions:
+        return _plain_preview(doc.entry.description)[:300]
+
+    positions.sort(reverse=True)
+    spans: list[list[int]] = []
+    for _, pos in positions[:2]:
+        start = max(0, pos - _SNIPPET_BEFORE)
+        # 尽量从最近的标题或段落开头截取，避免摘要从半句话开始
+        heading = body.rfind("\n#", start, pos)
+        if heading >= start:
+            start = heading + 1
+        else:
+            paragraph = body.rfind("\n\n", start, pos)
+            if paragraph >= start:
+                start = paragraph + 2
+        spans.append(
+            [start, min(len(body), pos + _SNIPPET_AFTER)]
+        )
+    spans.sort()
+
+    merged: list[list[int]] = []
+    for start, end in spans:
+        if merged and start <= merged[-1][1] + 40:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+
+    parts: list[str] = []
+    for start, end in merged:
+        part = re.sub(r"\s+", " ", body[start:end]).strip()
+        if not part:
+            continue
+        if start > 0:
+            part = "…" + part
+        if end < len(body):
+            part = part + "…"
+        parts.append(part)
+    return " ".join(parts)
+
+
+def _search_docs(
+    docs: tuple[KnowledgeDoc, ...], query: str, top_k: int
+) -> list[tuple[KnowledgeDoc, str]]:
+    """在标题、章节、说明和正文上检索，返回 (文档, 摘要)。"""
     terms = _query_terms(query)
-    if not terms:
+    if not terms or not docs:
         return []
 
-    scored: list[tuple[float, KnowledgeEntry]] = []
-    for entry in entries:
-        title = entry.title.lower()
-        section = entry.section.lower()
-        description = entry.description.lower()
-        url = entry.url.lower()
+    views = [
+        (
+            doc,
+            doc.entry.title.lower(),
+            doc.entry.section.lower(),
+            doc.entry.description.lower(),
+            doc.entry.url.lower(),
+            "\n".join(doc.headings).lower(),
+            doc.text.lower(),
+        )
+        for doc in docs
+    ]
+
+    # 在越少文档中出现的词越有区分度（IDF），避免「服务器」这类高频词压过
+    # 「白名单」这类真正决定相关性的词
+    total = len(views)
+    weights: dict[str, float] = {}
+    for term, base_weight in terms.items():
+        df = sum(
+            1
+            for _, title, section, description, url, headings, body in views
+            if (
+                term in title
+                or term in section
+                or term in description
+                or term in url
+                or term in headings
+                or term in body
+            )
+        )
+        if df == 0:
+            continue
+        idf = math.log((total + 1) / (df + 0.5)) + 1.0
+        weights[term] = base_weight * idf
+    if not weights:
+        return []
+
+    scored: list[tuple[float, KnowledgeDoc, dict[str, float]]] = []
+    for doc, title, section, description, url, headings, body in views:
         score = 0.0
-        for term in terms:
-            if term in title:
-                score += 4.0
-            if term in section:
-                score += 2.0
-            if term in description:
-                score += 2.0
-            if term in url:
-                score += 1.0
+        matched: dict[str, float] = {}
+        for term, weight in weights.items():
+            hits = (
+                min(title.count(term), 3) * 5.0
+                + min(section.count(term), 2) * 2.0
+                + min(description.count(term), 2) * 2.0
+                + min(url.count(term), 2) * 2.0
+                + min(headings.count(term), 3) * 3.0
+                + min(body.count(term), 6)
+            )
+            if hits:
+                score += weight * hits
+                matched[term] = weight
         if score > 0:
-            scored.append((score, entry))
+            scored.append((score, doc, matched))
 
     scored.sort(key=lambda item: item[0], reverse=True)
-    return [entry for _, entry in scored[:top_k]]
+    return [
+        (doc, _doc_snippet(doc, matched))
+        for _, doc, matched in scored[:top_k]
+    ]
+
+
+_GENERIC_SECTIONS = {"table of contents", "contents", "目录", "索引"}
+
+
+def _display_section(section: str) -> str:
+    """过滤 llms.txt 里没有信息量的通用章节名。"""
+    return "" if section.strip().lower() in _GENERIC_SECTIONS else section
 
 
 def _format_entry(index: int, entry: KnowledgeEntry) -> str:
     lines = [f"{index}. {entry.title}"]
-    if entry.section:
-        lines.append(f"   章节：{entry.section}")
+    section = _display_section(entry.section)
+    if section:
+        lines.append(f"   章节：{section}")
     lines.append(f"   URL：{entry.url}")
     if entry.description:
         lines.append(f"   说明：{entry.description[:300]}")
+    return "\n".join(lines)
+
+
+def _format_search_result(index: int, doc: KnowledgeDoc, snippet: str) -> str:
+    lines = [f"{index}. {doc.entry.title}"]
+    section = _display_section(doc.entry.section)
+    if section:
+        lines.append(f"   章节：{section}")
+    lines.append(f"   URL：{doc.entry.url}")
+    if snippet:
+        lines.append(f"   摘要：{snippet}")
+    elif doc.entry.description:
+        lines.append(f"   说明：{doc.entry.description[:300]}")
     return "\n".join(lines)
 
 
@@ -772,8 +1121,9 @@ async def _search_knowledge(
             "如需正文，请用 fetch_doc 抓取上面的 URL。"
         )
 
-    matches = _search_entries(
-        index.entries, query, cap or _DEFAULT_SEARCH_LIMIT
+    docs = await _get_docs(index)
+    matches = _search_docs(
+        docs, query, cap or _DEFAULT_SEARCH_LIMIT
     )
     if not matches:
         available = "\n".join(
@@ -781,18 +1131,19 @@ async def _search_knowledge(
             for entry in index.entries[:10]
         )
         return (
-            f"知识库索引中没有直接匹配「{query}」的条目。"
+            f"知识库正文中没有匹配「{query}」的内容。"
             f"可用条目（前 10 条）：\n{available}\n"
             "可以换个关键词再次检索，或直接 fetch 看起来相关的条目。"
         )
 
     body = "\n\n".join(
-        _format_entry(i + 1, entry)
-        for i, entry in enumerate(matches)
+        _format_search_result(i + 1, doc, snippet)
+        for i, (doc, snippet) in enumerate(matches)
     )
     return (
-        f"知识库索引匹配结果（来自 {index.url}）：\n{body}\n\n"
-        "如需正文，请用 fetch_doc 抓取上面的 URL。"
+        f"知识库全文检索结果（来自 {index.url}）：\n{body}\n\n"
+        "摘要已包含正文相关内容时可直接作答；"
+        "需要更多细节再用 fetch_doc 抓取上面的 URL。"
     )
 
 
@@ -887,8 +1238,8 @@ RECALL_CHAT = Tool(
 SEARCH_KNOWLEDGE = Tool(
     name="search_knowledge",
     description=(
-        "检索服务器知识库索引，返回知识库项目链接；"
-        "不传 query 时列出全部条目"
+        "检索服务器知识库：对文章标题、说明和正文做全文匹配，"
+        "返回匹配条目、链接和正文摘要；不传 query 时列出全部条目"
     ),
     parameters={
         "type": "object",
@@ -896,7 +1247,8 @@ SEARCH_KNOWLEDGE = Tool(
             "query": {
                 "type": "string",
                 "description": (
-                    "要检索的关键词或完整问题；"
+                    "关键内容词或完整问题（如「白名单」「开启服务器」）；"
+                    "避免只传「如何」「怎么」这类虚词；"
                     "不填则返回知识库全部条目"
                 ),
             },
