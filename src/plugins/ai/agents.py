@@ -15,7 +15,7 @@ from typing import Any
 from nonebot.log import logger
 
 from . import api, chat_log, config, media
-from .tools import CHAT_TOOLS, KNOWLEDGE_TOOLS, Tool
+from .tools import CHAT_TOOLS, KNOWLEDGE_TOOLS, Tool, now_label
 
 
 @dataclass(frozen=True)
@@ -122,11 +122,26 @@ async def _run_tool_calls(
 _EMPTY_REPLY_RETRIES = 2
 
 
-# 群聊记录作为第一条 user 消息注入，而不是拼进 system prompt：
+# 群聊记录作为 user 消息注入，而不是拼进 system prompt：
 # 每条记录都能带上发言人和时间，同时 system prompt 保持稳定，便于
-# provider 侧做 prompt 缓存。当前消息单独成一条 user 消息，同样带发言人。
+# provider 侧做 prompt 缓存。顺序固定为「当前时间 → 最近聊天记录 →
+# 当前消息」，当前消息同样带发言人。
 _HISTORY_HEADER = "# 最近聊天记录"
 _CURRENT_HEADER = "# 当前消息"
+_TIME_HEADER = "# 当前时间"
+
+
+def _time_message() -> dict[str, Any]:
+    """每次请求都预置的当前时间。
+
+    每次请求都是全新的上下文，模型无法从训练数据或聊天记录知道现在几点，
+    聊天记录里的时间也就没法解释成「多久以前」。这条消息固定放在
+    所有上下文消息的最前面，``get_current_time`` 工具保留作为兜底。
+    """
+    return {
+        "role": "user",
+        "content": f"{_TIME_HEADER}\n\n{now_label()}",
+    }
 
 
 def _content_with_parts(
@@ -240,6 +255,8 @@ async def run_agent(
         messages.append(
             {"role": "system", "content": agent.model.system_prompt}
         )
+    # 时间放在所有上下文之前，模型读到聊天记录时已经知道“现在”
+    messages.append(_time_message())
     if history_message is not None:
         messages.append(history_message)
     messages.append(current_message)

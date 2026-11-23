@@ -6,6 +6,8 @@
 
 {{include: shared/media.md}}
 
+{{include: shared/time.md}}
+
 # 一般步骤
 
 1. 判断用户提供的输入是否是与服务器或Minecraft相关的问题，还是单纯的调侃、非问题。如果不是问题，则引导玩家正确提问。

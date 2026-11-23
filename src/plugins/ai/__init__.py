@@ -144,7 +144,7 @@ async def _load_history(
 
     只取最近 ``AI_CHAT_LOG_RECENT`` 条，且不早于
     ``AI_CHAT_LOG_WINDOW_MINUTES`` 分钟前。返回的记录带 username 和
-    时间，由 agent 格式化后作为第一条 user 消息。
+    时间，由 agent 格式化后作为「最近聊天记录」user 消息。
     """
     limit = config.AI_CHAT_LOG_RECENT
     window = config.AI_CHAT_LOG_WINDOW_MINUTES
@@ -163,7 +163,7 @@ async def _load_history(
     span = f"{window} 分钟内" if window > 0 else "不限时间"
     logger.info(
         f"群聊上下文：预置 {len(history)} 条（上限 {limit} 条，{span}），"
-        "作为第一条 user 消息"
+        "位于当前时间之后、当前消息之前"
     )
     return history
 

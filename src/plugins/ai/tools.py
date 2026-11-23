@@ -81,13 +81,22 @@ async def _start_server() -> str:
     return await report.start_server_text()
 
 
-async def _get_current_time() -> str:
+def now_label() -> str:
+    """当前本地时间（含时区和星期）。
+
+    agent 上下文的第一条消息和 ``get_current_time`` 工具共用这一格式，
+    避免两处对“现在”的表述不一致。
+    """
     now = datetime.now().astimezone()
     weekdays = "一二三四五六日"
     return (
         f"{now.strftime('%Y-%m-%d %H:%M:%S %z')} "
         f"星期{weekdays[now.weekday()]}"
     )
+
+
+async def _get_current_time() -> str:
+    return now_label()
 
 
 async def _get_weather(
