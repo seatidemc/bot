@@ -1,6 +1,6 @@
-"""AI 工作流配置：router（TypeSafe System One）与 chat / knowledge 分别可配。
+"""AI 工作流配置：chat / knowledge 两套模型配置与提示词加载。
 
-router 不使用 AI_DEFAULT_*，也不经过 openai-completions 接口。
+两套配置都走 openai-completions；未单独配置时回退到 AI_DEFAULT_*。
 """
 
 from __future__ import annotations
@@ -179,27 +179,7 @@ class ModelConfig:
     prompt_file: str
 
 
-@dataclass(frozen=True)
-class RouterConfig:
-    """TypeSafe System One 分类器的配置。
-
-    System One 只有 state / questions 两个输入，没有 system prompt、
-    temperature、max_tokens 或思考强度；重试由 SDK 的 RetryPolicy 负责。
-    """
-
-    component: str
-    api_key: str
-    base_url: str
-    model: str
-    timeout: float
-    max_retries: int
-    # router state 中保留的用户消息条数（跳过 bot 回复与斜杠指令）
-    history_turns: int
-    # knowledge 概率低于该值时改判 chat；0 表示不启用
-    min_knowledge_probability: float
-
-
-# AI_DEFAULT_* 是 chat / knowledge 共用的 fallback 值（router 不用）
+# AI_DEFAULT_* 是 chat / knowledge 共用的 fallback 值
 AI_DEFAULT_API_KEY: str = _text("ai_default_api_key")
 AI_DEFAULT_BASE_URL: str = _text(
     "ai_default_base_url", "https://api.deepseek.com"
@@ -241,26 +221,6 @@ def _build_chat() -> ModelConfig:
 
 CHAT: ModelConfig = _build_chat()
 
-
-# router 走 TypeSafe System One（typesafe-sdk），与 openai-completions 端点无关。
-# 只读取 AI_ROUTER_* 配置；请求只发送 state 和 Choice 问题，不使用提示词。
-ROUTER: RouterConfig = RouterConfig(
-    component="router",
-    api_key=_text("ai_router_api_key"),
-    base_url=(
-        _text("ai_router_base_url") or "https://api.typesafe.ai"
-    ).rstrip("/"),
-    model=_text("ai_router_model") or "jev-latest",
-    timeout=_float("ai_router_timeout", 20.0),
-    max_retries=max(0, _int("ai_router_max_retries", 2)),
-    # 语义是"最近多少条用户消息"，不是对话轮数；router 会跳过 bot 回复
-    # 和斜杠指令，只用来理解追问和指代。
-    history_turns=max(0, _int("ai_router_history_turns", 3)),
-    # knowledge 概率门槛：低于该值按 chat 处理，0 表示不启用
-    min_knowledge_probability=_float(
-        "ai_router_min_knowledge_probability", 0.6
-    ),
-)
 
 _KNOWLEDGE_PROMPT_FILE = _text(
     "ai_knowledge_system_prompt_file", "prompts/knowledge_prompt.md"
@@ -338,51 +298,14 @@ def _valid_http_url(url: str) -> bool:
 def validate_agent_configs() -> list[str]:
     """检查可静态验证的 agent 配置；返回错误列表，空列表表示通过。
 
-    AI 开启时 router 与两个 agent 都参与链路，因此各方的 Key、端点、模型 id、
-    系统提示词和 knowledge 的 llms.txt URL 都必须是可用配置，避免把
-    配置错误拖到运行时才发现。
+    AI 开启时 chat / knowledge 两个 agent 都参与链路，因此各方的 Key、
+    端点、模型 id、系统提示词和 knowledge 的 llms.txt URL 都必须是可用
+    配置，避免把配置错误拖到运行时才发现。
     """
     if not AI_ENABLED:
         return []
 
     problems: list[str] = []
-
-    # router：TypeSafe System One
-    if not ROUTER.api_key:
-        problems.append(
-            "router: 未配置 API Key（AI_ROUTER_API_KEY）"
-        )
-    if not ROUTER.model:
-        problems.append("router: 模型 id 为空")
-    if not _valid_http_url(ROUTER.base_url):
-        problems.append(
-            "router: BASE_URL 必须是 http/https URL，"
-            f"当前为 {ROUTER.base_url!r}"
-        )
-    else:
-        # typesafe-sdk 直接拼接 BASE_URL + "/v1/systemone"；百炼决策模型
-        # 的正确路径是 /compatible-mode/v1/systemone，所以 BASE_URL 必须
-        # 以 /compatible-mode 结尾（写成 /compatible-mode/v1 会重复 /v1）。
-        parsed = urlparse(ROUTER.base_url)
-        if (parsed.hostname or "").endswith(
-            ".maas.aliyuncs.com"
-        ) and not parsed.path.rstrip("/").endswith(
-            "/compatible-mode"
-        ):
-            problems.append(
-                "router: 阿里云百炼的 AI_ROUTER_BASE_URL 必须以 "
-                "/compatible-mode 结尾（SDK 会自动追加 /v1/systemone），"
-                f"当前为 {ROUTER.base_url!r}"
-            )
-    if ROUTER.timeout <= 0:
-        problems.append(
-            f"router: TIMEOUT 必须大于 0，当前为 {ROUTER.timeout}"
-        )
-    if not (0.0 <= ROUTER.min_knowledge_probability <= 1.0):
-        problems.append(
-            "router: MIN_KNOWLEDGE_PROBABILITY 必须在 0~1 之间，"
-            f"当前为 {ROUTER.min_knowledge_probability}"
-        )
 
     key_hints = {
         "chat": "AI_CHAT_API_KEY 或 AI_DEFAULT_API_KEY",
