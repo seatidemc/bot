@@ -2,8 +2,8 @@
 
 记录按 ``group_openid`` 隔离，同一个群里所有人的发言和 bot 的回复构成
 同一份上下文。每条用户消息额外保存 ``username`` / ``user_openid`` 和
-时间：作为 agent 的第一条 user 消息预置时，按「用户名 | 时间 | 发言内容」
-区分发言人。消息只增不删，用于：
+时间：作为 user 消息预置时，按「用户名#标识 | 时间 | 发言内容」区分
+发言人，标识取 openid 后 6 位。消息只增不删，用于：
 
 - 每次请求时把最近的聊天内容作为第一条 user 消息注入；
 - chat agent 通过 ``recall_chat`` 工具检索更早的记录。
@@ -26,6 +26,9 @@ from nonebot.log import logger
 _DB_PATH = Path(__file__).resolve().parents[3] / "data" / "chat_log.db"
 _DB_LOCK = asyncio.Lock()
 _ready = False
+
+# 显示名里附带的 openid 稳定标识长度
+_STABLE_ID_LEN = 6
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS chat_log (
@@ -188,22 +191,53 @@ async def recent_entries(
     return await _run(op)
 
 
+def stable_id(user_openid: str) -> str:
+    """取 openid 末尾几位作为稳定标识，用于区分同名、应付改名。"""
+    user_openid = user_openid.strip()
+    return user_openid[-_STABLE_ID_LEN:] if user_openid else ""
+
+
 def speaker_name(entry: ChatLogEntry) -> str:
-    """聊天记录里的发言人显示名：用户名优先，缺失时用 openid 后四位。"""
+    """聊天记录里的发言人显示名：用户名 + openid 稳定标识。
+
+    显示为 ``小明#a1b2c3``；缺少用户名时用 ``玩家#a1b2c3``。同一用户改名
+    后标识不变，不同用户重名时仍可区分。
+    """
     if entry.role == "bot":
         return "bot"
-    name = entry.username.strip()
-    if name:
-        return name
-    openid = entry.user_openid.strip()
-    return f"玩家{openid[-4:]}" if openid else "玩家"
+    name = entry.username.strip() or "玩家"
+    suffix = stable_id(entry.user_openid)
+    return f"{name}#{suffix}" if suffix else name
 
 
 def format_transcript_line(entry: ChatLogEntry) -> str:
-    """把一条聊天记录格式化为 system prompt 里的单行：用户 | 时间 | 内容。"""
+    """把一条聊天记录格式化为单行：用户 | 时间 | 内容。"""
     stamp = datetime.fromtimestamp(entry.created_at).strftime("%Y-%m-%d %H:%M")
     content = " ".join(entry.content.split())
     return f"{speaker_name(entry)} | {stamp} | {content}"
+
+
+async def members(group_openid: str) -> list[tuple[str, str]]:
+    """返回该群里出现过的 ``(user_openid, username)`` 组合。
+
+    同一用户改过昵称会留下多条；按最近发言排序，最新的昵称在前。
+    供 @ 解析建立 openid / 昵称到用户名的映射。
+    """
+
+    def op(conn: sqlite3.Connection) -> list[tuple[str, str]]:
+        rows = conn.execute(
+            "SELECT user_openid, username, MAX(id) AS last_id "
+            "FROM chat_log "
+            "WHERE group_openid = ? AND role = 'user' AND user_openid != '' "
+            "GROUP BY user_openid, username "
+            "ORDER BY last_id DESC",
+            (group_openid,),
+        ).fetchall()
+        return [
+            (row["user_openid"], row["username"]) for row in rows
+        ]
+
+    return await _run(op)
 
 
 def _escape_like(term: str) -> str:

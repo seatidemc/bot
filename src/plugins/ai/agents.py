@@ -124,8 +124,9 @@ _EMPTY_REPLY_RETRIES = 2
 
 # 群聊记录作为第一条 user 消息注入，而不是拼进 system prompt：
 # 每条记录都能带上发言人和时间，同时 system prompt 保持稳定，便于
-# provider 侧做 prompt 缓存。
+# provider 侧做 prompt 缓存。当前消息单独成一条 user 消息，同样带发言人。
 _HISTORY_HEADER = "# 最近聊天记录"
+_CURRENT_HEADER = "# 当前消息"
 
 
 def _build_history_message(
@@ -140,8 +141,20 @@ def _build_history_message(
     }
 
 
+def _build_current_message(current: chat_log.ChatLogEntry) -> dict[str, str]:
+    return {
+        "role": "user",
+        "content": (
+            f"{_CURRENT_HEADER}\n\n"
+            f"{chat_log.format_transcript_line(current)}"
+        ),
+    }
+
+
 async def run_agent(
-    agent: Agent, text: str, history: list[chat_log.ChatLogEntry]
+    agent: Agent,
+    current: chat_log.ChatLogEntry,
+    history: list[chat_log.ChatLogEntry],
 ) -> str:
     messages: list[dict[str, Any]] = []
     if agent.model.system_prompt:
@@ -150,7 +163,7 @@ async def run_agent(
         )
     if history:
         messages.append(_build_history_message(history))
-    messages.append({"role": "user", "content": text})
+    messages.append(_build_current_message(current))
 
     empty_replies = 0
     while True:

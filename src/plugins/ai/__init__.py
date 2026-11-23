@@ -21,7 +21,14 @@ from nonebot.permission import Permission
 from nonebot.rule import Rule
 
 from ..lab_client import is_command_text, is_group_addressed
-from . import api, chat_log, config, tools, workflow
+from . import (
+    api,
+    chat_log,
+    config,
+    mentions,
+    tools,
+    workflow,
+)
 
 # ─── 匹配器 ──────────────────────────────────────────────────
 
@@ -195,8 +202,16 @@ async def handle_chat(bot: Bot, event: GroupMessageCreateEvent):
         token = tools.set_group_context(event.group_openid)
         try:
             history = await _load_history(event)
+            author = getattr(event, "author", None)
+            current = chat_log.ChatLogEntry(
+                role="user",
+                user_openid=event.get_user_id(),
+                username=getattr(author, "username", "") or "",
+                content=text,
+                created_at=time.time(),
+            )
             try:
-                result = await workflow.run(text, history)
+                result = await workflow.run(current, history)
             except api.LLMError as e:
                 # 具体错误只写日志，群里只给稳定、不含内部信息的提示
                 logger.warning(f"AI 调用失败: {e}")
@@ -211,32 +226,62 @@ async def handle_chat(bot: Bot, event: GroupMessageCreateEvent):
     if not reply:
         reply = "（AI 没有返回内容，换个问法试试？）"
 
-    # 记录实际发到群里的完整内容，不截断
+    # chat 只发纯文本（可解析 @），knowledge 只发 Markdown（不解析 @）
+    if result.intent == "chat":
+        directory = None
+        if "@" in reply:
+            try:
+                directory = mentions.build(
+                    await chat_log.members(event.group_openid)
+                )
+            except Exception:
+                logger.warning("读取群成员失败，本次不解析 @", exc_info=True)
+        rendered = mentions.render(reply, directory)
+    else:
+        rendered = mentions.RenderedReply(reply)
+
+    # 记录实际发到群里的完整内容，不截断；标识不会进入记录
     logger.info(
-        f"AI 回复[{result.intent}][群 {event.group_openid}]：{reply}"
+        f"AI 回复[{result.intent}][群 {event.group_openid}]："
+        f"{rendered.text}"
     )
 
     try:
-        await chat_log.record_bot(event.group_openid, reply)
+        await chat_log.record_bot(event.group_openid, rendered.text)
     except Exception:
         logger.exception("群聊记录写入失败")
-    await _send_reply(reply)
+    await _send_reply(rendered, markdown=result.intent != "chat")
 
 
-async def _send_reply(reply: str) -> None:
-    """发送最终回复：优先 QQ 原生 Markdown，发送失败时回退纯文本。"""
-    if not config.AI_MARKDOWN_REPLY:
-        await chat.finish(reply)
+async def _send_reply(
+    rendered: mentions.RenderedReply, *, markdown: bool
+) -> None:
+    """发送最终回复：knowledge 走 Markdown，chat 走纯文本（可带 @ 段）。"""
+    if markdown:
+        try:
+            await chat.send(MessageSegment.markdown(rendered.text))
+        except Exception:
+            logger.warning(
+                "Markdown 回复发送失败，回退为纯文本", exc_info=True
+            )
+            await chat.finish(rendered.text)
+            return
+        await chat.finish()
         return
 
-    try:
-        await chat.send(MessageSegment.markdown(reply))
-    except Exception:
-        logger.warning("Markdown 回复发送失败，回退为纯文本", exc_info=True)
-        await chat.finish(reply)
+    if rendered.message is not None:
+        try:
+            await chat.send(rendered.message)
+        except Exception:
+            logger.warning(
+                "带 @ 的回复发送失败，回退纯文本", exc_info=True
+            )
+            await chat.finish(rendered.text)
+            return
+        await chat.finish()
         return
 
-    await chat.finish()
+    await chat.finish(rendered.text)
 
 
 # ─── 启动日志 ────────────────────────────────────────────────

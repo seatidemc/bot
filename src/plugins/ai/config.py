@@ -362,9 +362,6 @@ AI_GROUP_CHAT_WITHOUT_AT: bool = _as_bool(
 # 每分钟最多自动聊天回复次数（只统计未 @ 的群消息），0 表示关闭
 AI_GROUP_CHAT_PER_MINUTE: int = _int("ai_group_chat_per_minute", 5)
 
-# AI 最终回复以 QQ 原生 Markdown（msg_type=2）发送；发送失败时回退纯文本
-AI_MARKDOWN_REPLY: bool = _as_bool(_raw("ai_markdown_reply"), True)
-
 
 # ─── 启动校验 ────────────────────────────────────────────────
 
