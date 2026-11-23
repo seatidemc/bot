@@ -19,9 +19,11 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, Sequence, TypeVar
 
 from nonebot.log import logger
+
+from .media import MediaItem, items_from_json, items_to_json
 
 _DB_PATH = Path(__file__).resolve().parents[3] / "data" / "chat_log.db"
 _DB_LOCK = asyncio.Lock()
@@ -38,6 +40,7 @@ CREATE TABLE IF NOT EXISTS chat_log (
     user_openid  TEXT    NOT NULL DEFAULT '',
     username     TEXT    NOT NULL DEFAULT '',
     content      TEXT    NOT NULL,
+    media        TEXT    NOT NULL DEFAULT '[]',
     message_id   TEXT,
     created_at   REAL    NOT NULL
 );
@@ -57,6 +60,8 @@ class ChatLogEntry:
     username: str
     content: str
     created_at: float
+    # 这条消息附带的图片 / 视频（本地文件，见 media.py）
+    media: tuple[MediaItem, ...] = ()
 
 
 def db_path() -> Path:
@@ -70,6 +75,20 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def _prepare(conn: sqlite3.Connection) -> None:
+    conn.executescript(_SCHEMA)
+    # 旧库补 media 列：图片 / 视频记在新增列里，不改动已有数据
+    columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(chat_log)")
+    }
+    if "media" not in columns:
+        conn.execute(
+            "ALTER TABLE chat_log "
+            "ADD COLUMN media TEXT NOT NULL DEFAULT '[]'"
+        )
+    conn.commit()
+
+
 async def _run(fn: Callable[[sqlite3.Connection], T]) -> T:
     """串行执行一次数据库操作，避免并发写锁冲突。"""
 
@@ -78,7 +97,7 @@ async def _run(fn: Callable[[sqlite3.Connection], T]) -> T:
         conn = _connect()
         try:
             if not _ready:
-                conn.executescript(_SCHEMA)
+                _prepare(conn)
                 _ready = True
             return fn(conn)
         finally:
@@ -86,6 +105,19 @@ async def _run(fn: Callable[[sqlite3.Connection], T]) -> T:
 
     async with _DB_LOCK:
         return await asyncio.to_thread(work)
+
+
+def _entry_from_row(row: sqlite3.Row) -> ChatLogEntry:
+    keys = row.keys()
+    media_raw = row["media"] if "media" in keys else None
+    return ChatLogEntry(
+        role=row["role"],
+        user_openid=row["user_openid"],
+        username=row["username"],
+        content=row["content"],
+        created_at=row["created_at"],
+        media=items_from_json(media_raw),
+    )
 
 
 async def record_user(
@@ -96,20 +128,25 @@ async def record_user(
     message_id: str | None = None,
     username: str = "",
     created_at: float | None = None,
+    media: Sequence[MediaItem] = (),
 ) -> None:
-    """记录一条用户群消息；message_id 相同的重复投递会被忽略。"""
+    """记录一条用户群消息；message_id 相同的重复投递会被忽略。
+
+    ``media`` 是已经下载到本地的图片 / 视频，按 JSON 存进 media 列。
+    """
 
     def op(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO chat_log "
-            "(group_openid, role, user_openid, username, content, "
+            "(group_openid, role, user_openid, username, content, media, "
             " message_id, created_at) "
-            "VALUES (?, 'user', ?, ?, ?, ?, ?)",
+            "VALUES (?, 'user', ?, ?, ?, ?, ?, ?)",
             (
                 group_openid,
                 user_openid,
                 username,
                 content,
+                items_to_json(media),
                 message_id,
                 created_at if created_at is not None else time.time(),
             ),
@@ -117,6 +154,38 @@ async def record_user(
         conn.commit()
 
     await _run(op)
+
+
+async def has_message(group_openid: str, message_id: str) -> bool:
+    """该群是否已经记录过这条消息（用于避免重复下载附件）。"""
+
+    def op(conn: sqlite3.Connection) -> bool:
+        row = conn.execute(
+            "SELECT 1 FROM chat_log "
+            "WHERE group_openid = ? AND message_id = ? LIMIT 1",
+            (group_openid, message_id),
+        ).fetchone()
+        return row is not None
+
+    return await _run(op)
+
+
+async def entry_for_message(
+    group_openid: str, message_id: str
+) -> ChatLogEntry | None:
+    """按 message_id 取一条已记录的群消息（含媒体）；没有则返回 None。"""
+
+    def op(conn: sqlite3.Connection) -> ChatLogEntry | None:
+        row = conn.execute(
+            "SELECT role, user_openid, username, content, media, created_at "
+            "FROM chat_log "
+            "WHERE group_openid = ? AND message_id = ? "
+            "ORDER BY id LIMIT 1",
+            (group_openid, message_id),
+        ).fetchone()
+        return _entry_from_row(row) if row is not None else None
+
+    return await _run(op)
 
 
 async def record_bot(
@@ -162,7 +231,7 @@ async def recent_entries(
 
     def op(conn: sqlite3.Connection) -> list[ChatLogEntry]:
         rows = conn.execute(
-            "SELECT role, user_openid, username, content, created_at "
+            "SELECT role, user_openid, username, content, media, created_at "
             "FROM chat_log "
             "WHERE group_openid = ? "
             "  AND (? IS NULL OR message_id IS NULL OR message_id != ?) "
@@ -177,16 +246,7 @@ async def recent_entries(
                 limit,
             ),
         ).fetchall()
-        return [
-            ChatLogEntry(
-                role=row["role"],
-                user_openid=row["user_openid"],
-                username=row["username"],
-                content=row["content"],
-                created_at=row["created_at"],
-            )
-            for row in reversed(rows)
-        ]
+        return [_entry_from_row(row) for row in reversed(rows)]
 
     return await _run(op)
 
@@ -275,7 +335,7 @@ async def search(
     """
     take = max(1, min(int(limit), 200))
     sql = (
-        "SELECT role, user_openid, username, content, created_at "
+        "SELECT role, user_openid, username, content, media, created_at "
         "FROM chat_log WHERE group_openid = ?"
     )
     params: list[Any] = [group_openid]
@@ -293,16 +353,7 @@ async def search(
 
     def op(conn: sqlite3.Connection) -> list[ChatLogEntry]:
         rows = conn.execute(sql, params).fetchall()
-        return [
-            ChatLogEntry(
-                role=row["role"],
-                user_openid=row["user_openid"],
-                username=row["username"],
-                content=row["content"],
-                created_at=row["created_at"],
-            )
-            for row in reversed(rows)
-        ]
+        return [_entry_from_row(row) for row in reversed(rows)]
 
     entries = await _run(op)
     logger.debug(

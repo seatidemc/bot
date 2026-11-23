@@ -45,7 +45,8 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `src/plugins/ai/tools.py` | 聊天工具（群聊记录检索、当前时间、和风天气）与知识库工具（llms.txt 索引 + 正文全文检索、受限 wiki fetch、联网搜索、公网网页抓取、实时状态、一键启动） |
 | `src/plugins/ai/weather.py` | 和风天气客户端：GeoAPI 城市解析、实时/分钟级/逐小时/逐日/预警/生活指数/空气质量查询、中文格式化、TTL 缓存与月度请求限额 |
 | `src/plugins/ai/workflow.py` | 工作流编排：router → agent |
-| `src/plugins/ai/chat_log.py` | 群聊聊天记录永久存储（SQLite `data/chat_log.db`），供 user 消息上下文和 `recall_chat` 检索 |
+| `src/plugins/ai/chat_log.py` | 群聊聊天记录永久存储（SQLite `data/chat_log.db`），供 user 消息上下文和 `recall_chat` 检索；`media` 列保存每条的本地图片 / 视频路径 |
+| `src/plugins/ai/media.py` | 消息解析与媒体落盘：文本 / `[表情:名称]` / `[图片]` / `[视频]` 标记、收到即下载附件、GIF 转 MP4、组装多模态 content part |
 | `src/plugins/http_api/` | 对外 HTTP 接口：`POST /bot/group-message` 向指定群（或默认群）发消息，`GET /bot/health` 探活；仅回环地址，随 NoneBot 的 FastAPI 驱动启动 |
 | `test_mock_client.py` | [已废弃] 旧版 OneBot v11 模拟客户端，迁移至 adapter-qq 后不再可用 |
 
@@ -85,6 +86,16 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `AI_WEATHER_MONTHLY_LIMIT` | 每个自然月最多发往和风的请求数（含 GeoAPI），默认 50000 = 官方免费额度；`0` 表示不限制并进入按量计费；计数落盘 `data/weather_usage.json` |
 | `AI_WEATHER_CACHE_TTL` | 成功天气结果的内存缓存秒数，默认 300；`0` 表示不缓存 |
 | `AI_CHAT_LOG_RECENT` | 作为第一条 user 消息预置的最近聊天记录条数，默认 20，最大 200 |
+| `AI_MEDIA_ENABLED` | 图片 / 视频是否作为多模态 content part 交给模型，默认 `true`；附件下载不受该开关影响，纯文本模型需设为 `false` |
+| `AI_MEDIA_CONTEXT_MESSAGES` | 历史消息附带媒体的条数（当前消息始终附带），默认 3；`0` 表示历史消息不带媒体 |
+| `AI_MEDIA_MAX_CONTEXT_ITEMS` | 单次模型请求最多附带多少个媒体（图片 + 视频合计），默认 6，当前消息优先 |
+| `AI_MEDIA_MAX_CONTEXT_BYTES` | 单次请求所有媒体的 base64 字符总量上限，默认 12 MiB（百炼 DashScope 请求体上限 16 MiB，留出提示词余量） |
+| `AI_MEDIA_DOWNLOAD_TIMEOUT` | 单个附件下载超时，默认 30 秒 |
+| `AI_MEDIA_MAX_DOWNLOAD_BYTES` | 单个附件下载体积上限，默认 50 MiB，超出放弃该文件 |
+| `AI_MEDIA_MAX_IMAGE_BYTES` | 发给模型的图片按编码前文件字节算，默认 10 MiB（Qwen3.8 Base64 Data URI 上限 20MB）；超出仍保存但不附带 |
+| `AI_MEDIA_MAX_VIDEO_BASE64_BYTES` | 发给模型的视频按 base64 编码后字符串算，默认 10,000,000（百炼要求小于 10MB）；超出仍保存但不附带 |
+| `AI_MEDIA_GIF_TO_VIDEO` | GIF 是否用 ffmpeg 转成百炼支持的格式，默认 `true`：单帧转 PNG，动图转 MP4；设为 `false` 时 GIF 不发给模型 |
+| `AI_MEDIA_FFMPEG_PATH` / `AI_MEDIA_FFMPEG_TIMEOUT` | ffmpeg 可执行文件（默认 `ffmpeg`，同目录的 `ffprobe` 用来读 GIF 帧数和时长）与转换超时，默认 60 秒 |
 | `AI_CHAT_LOG_WINDOW_MINUTES` | 群聊上下文只取最近多少分钟内的记录，默认 30；`0` 表示不限时间 |
 | `AI_ROUTER_MAX_RETRIES` | router 的 SDK 自动重试次数（不含首次请求），默认 2，0 关闭 |
 | `AI_ROUTER_HISTORY_TURNS` | router 参考最近多少条用户消息，默认 3；自动跳过 bot 回复和斜杠指令 |
@@ -108,7 +119,7 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 
 **指令判定**：任何以 `/` 或 `／` 开头的消息都视为指令，无论该指令是否存在。已知指令由 `on_command` 处理；未知指令由 `lab_client` 的兜底匹配器回复「指令不存在」并列出可用指令。群内指令仍然需要 @bot，未 @ 的斜杠消息会被忽略。
 
-**非指令消息**：只有群消息进入 `ai` 工作流（私聊直接忽略）。所有群消息先写入 `data/chat_log.db`；AI 关闭时回复「暂未启动AI」，AI 开启时先查关键词词表（命中直接走 knowledge），否则从聊天记录取上下文并交给 router 判断聊天类型。
+**非指令消息**：只有群消息进入 `ai` 工作流（私聊直接忽略）。所有群消息连同"收到即下载"的图片 / 视频先写入 `data/chat_log.db`，纯图片、纯表情消息也会记录并交给 AI；AI 关闭时回复「暂未启动AI」，AI 开启时先查关键词词表（命中直接走 knowledge），否则从聊天记录取上下文并交给 router 判断聊天类型。
 
 ## 本地测试
 
@@ -121,6 +132,15 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 ```bash
 source .venv/bin/activate && python test_mock_client.py
 ```
+
+## 单元测试
+
+```bash
+source .venv/bin/activate
+PYTHONPATH=. python -m unittest discover -s tests -t .
+```
+
+`tests/test_media.py` 覆盖消息解析（文本 / 表情 / 图片标记）、附件下载、GIF 转 MP4、多模态 content part 和聊天记录 media 列的读写与旧库迁移；GIF 用例在未安装 ffmpeg 时自动跳过。测试不访问真实 QQ 或模型端点。
 
 ## 后端接入
 
@@ -140,7 +160,14 @@ source .venv/bin/activate && python test_mock_client.py
 - 群主开启「获取群内全部消息」后，事件类型从 `GROUP_AT_MESSAGE_CREATE` 变为 `GROUP_MESSAGE_CREATE`；插件统一用 `GroupMessageCreateEvent` 基类，并用 `event.to_me` / `mentions.is_you` 判断是否被 @
 - `QQ_BOTS` 的 intent 只开了 `c2c_group_at_messages`，bot 会收到私聊和群 @ 消息；目前私聊事件直接忽略，只处理群聊
 - `GROUP_OPENID` 首次为空是正常的：启动后在群里发消息，openid 会自动写入 `data/group_openids.json`，无需重启；机器人被拉入多个群时会记录多个 openid，最近发言的群排在末尾
-- `.env`、`data/`、`.venv/` 均被 `.gitignore` 排除
+- `.env`、`data/`、`.venv/` 均被 `.gitignore` 排除；图片 / 视频存在 `data/media/`（同样被忽略），聊天记录只存相对路径，迁移机器时 `data/` 要整体搬走
+- `data/media/` 没有自动清理：聊天记录是永久保存的，媒体也按消息留存，磁盘会随图片 / 视频增长；手动删除文件不会破坏数据库，只是这些历史媒体不能再发给模型（会提示「文件已丢失」）
+- `data/chat_log.db` 旧库在启动首次访问时自动 `ALTER TABLE chat_log ADD COLUMN media TEXT NOT NULL DEFAULT '[]'`，无需手动迁移
+- QQ 图片 / 视频的附件 URL 带签名会过期，必须在收到消息时下载（`recorder` 里完成），不能等 AI 需要时再拉；下载失败只跳过该文件
+- QQ 内置表情（小黄脸）无法下载，`<emoji:id>` / `<faceType=...>` 的 id → 名称映射写在 `media.py` 的 `QQ_EMOJI_NAMES`（经典 0~103），未知 id 显示成 `[QQ表情:id]`；表情包是图片附件，走图片链路
+- GIF 是图片格式但不在百炼图片格式表里：`media.py` 用 ffprobe 读帧数和时长，单帧转 PNG、多帧转 MP4（H.264、`+faststart`、宽高补齐偶数，不足 2 秒循环补齐），转换成功后删除原 GIF；ffmpeg 不在 PATH 或转换失败时只记 WARNING，GIF 不发给模型（`build_parts` 跳过 image/gif）
+- 百炼的视频输入对 Base64 有限制：**编码后字符串小于 10MB**（不是文件字节），所以默认 `AI_MEDIA_MAX_VIDEO_BASE64_BYTES=10000000`；GIF 转码后可以重新检查，超限则不附带
+- 多模态 part 的写法是 openai-completions 的 `image_url` / `video_url`（后者按 Qwen / DashScope compatible-mode 格式）；换 provider 时先确认它接受 `data:...;base64` 和视频 part，不支持会在首次请求 400 后自动退回纯文本
 - router 依赖 `typesafe-sdk`（0.7.x，内部使用 `httpx2`）；它只负责 System One，不参与 openai-completions 调用
 - `typesafe-sdk` 默认在请求体 ≥1024 字节时做 zstd 压缩；阿里云百炼的 System One 端点不识别 `Content-Encoding`，会把 zstd 帧当 JSON 解码并返回 400 `invalid character '(' looking for beginning of value`（zstd 魔数首字节是 `0x28`，即 `(`）。`router.py` 创建客户端时固定传 `compression=False`；不要删除，否则请求体一旦超过 1023 字节就会复现该错误
 - 阿里云百炼决策模型（`AI_ROUTER_MODEL=decision-model-preview`）的端点是 `https://{WorkspaceId}.{region}.maas.aliyuncs.com/compatible-mode/v1/systemone`；SDK 会在 `AI_ROUTER_BASE_URL` 后追加 `/v1/systemone`，所以 BASE_URL 必须以 `/compatible-mode` 结尾。写成 `/compatible-mode/v1` 会请求 `/compatible-mode/v1/v1/systemone` 返回 404，启动校验会直接拦下 `*.maas.aliyuncs.com` 但不以 `/compatible-mode` 结尾的配置
@@ -196,7 +223,10 @@ SEATIDE_ENV=prod python bot.py   # 生产
 - **提示词文件**：chat / knowledge 各用一个独立的提示词文件，支持 `{{include: shared/xxx.md}}` 复用共享片段：路径相对当前提示词文件所在目录，支持嵌套，循环与最大 8 层嵌套会报错；展开失败会使系统提示词为空，由启动校验直接阻止启动。router 不使用提示词文件，System One 请求只发送 state 和 Choice 问题。
 - **agent loop**：工具结果原样写回模型，不截断；工具调用轮数不设上限，由模型自行决定何时给出最终回复。模型偶发只返回空正文（没有工具调用）时会原样重试最多 2 次，每次以 WARNING 记录 `finish_reason`；仍为空则由上层回复兜底文案。
 - **模型配置**：router 与 chat / knowledge 两套配置互相独立。router 只读取 `AI_ROUTER_*`：`AI_ROUTER_API_KEY` 必填，`BASE_URL` / `MODEL` 未配置时使用 `https://api.typesafe.ai` / `jev-latest`；超时和重试分别由 `AI_ROUTER_TIMEOUT` / `AI_ROUTER_MAX_RETRIES` 控制，不使用 `AI_DEFAULT_*`。chat / knowledge 固定通过官方 `openai` SDK 走 openai-completions 格式；它们的 API Key 未单独配置时回退到 `AI_DEFAULT_API_KEY`；端点、模型 id、temperature、thinking effort、max tokens、超时和系统提示词未配置时回退到 `AI_DEFAULT_*`。
-- **上下文**：只按群隔离，不按人隔离。所有群消息（含指令、未 @ 闲聊）落地到 `data/chat_log.db`；每次请求从该表取最近 `AI_CHAT_LOG_RECENT` 条、且不早于 `AI_CHAT_LOG_WINDOW_MINUTES` 分钟前的记录，以 INFO 记录实际条数。这些记录**不拼进 system prompt**，而是格式化为每行 `用户名#标识 | 时间 | 发言内容` 作为第一条 user 消息，顶部加 `# 最近聊天记录`；标识是 `user_openid` 后 6 位（bot 记为 `bot`，缺用户名时为 `玩家#标识`），因此同一用户改名、不同用户重名都能区分，system prompt 也保持稳定。当前消息单独作为第二条 user 消息，顶部 `# 当前消息`，同样带用户名和标识。router 只从中取最近 `AI_ROUTER_HISTORY_TURNS` 条用户消息（跳过 bot 回复和斜杠指令）用于分类，只看正文不看发言人；chat agent 可用 `recall_chat` 按关键词和时间范围（`Nd` / `Nh` / `Nm`，默认 `1h`）检索更早的记录；格式无法解析、或起点早于本群最早聊天记录时，工具会返回错误而不是静默调整范围，`0` 表示不限时间。
+- **上下文**：只按群隔离，不按人隔离。所有群消息（含指令、未 @ 闲聊）落地到 `data/chat_log.db`（每条可带已下载的图片 / 视频，见下一条）；每次请求从该表取最近 `AI_CHAT_LOG_RECENT` 条、且不早于 `AI_CHAT_LOG_WINDOW_MINUTES` 分钟前的记录，以 INFO 记录实际条数。这些记录**不拼进 system prompt**，而是格式化为每行 `用户名#标识 | 时间 | 发言内容` 作为第一条 user 消息，顶部加 `# 最近聊天记录`；标识是 `user_openid` 后 6 位（bot 记为 `bot`，缺用户名时为 `玩家#标识`），因此同一用户改名、不同用户重名都能区分，system prompt 也保持稳定。当前消息单独作为第二条 user 消息，顶部 `# 当前消息`，同样带用户名和标识。router 只从中取最近 `AI_ROUTER_HISTORY_TURNS` 条用户消息（跳过 bot 回复和斜杠指令）用于分类，只看正文不看发言人；chat agent 可用 `recall_chat` 按关键词和时间范围（`Nd` / `Nh` / `Nm`，默认 `1h`）检索更早的记录；格式无法解析、或起点早于本群最早聊天记录时，工具会返回错误而不是静默调整范围，`0` 表示不限时间。
+- **图片 / 视频 / 表情**：QQ 图片和视频以 `Attachment` 段到达，URL 带签名、会过期，`recorder`（priority=1）收到消息后立即下载到 `data/media/<群 openid>/<消息 id>/`，聊天记录 `media` 列只保存相对路径；下载失败只丢该文件，文本照常入库。正文里图片 / 视频变成 `[图片]`、`[视频]` 标记（同一消息多个时编号 `[图片1]`），QQ 内置小黄脸变成 `[表情:微笑]`（未知 id 为 `[QQ表情:id]`），语音 / 文件只有 `[语音]`、`[文件]` 标记且不下载。表情包属于图片附件，按图片处理。
+- **GIF**：百炼图片支持格式（BMP / JPEG / PNG / TIFF / WEBP / HEIC）不含 GIF，所以 `AI_MEDIA_GIF_TO_VIDEO` 开启时由 ffmpeg 转码：ffprobe 帧数 ≤ 1 视为静态 GIF，取首帧转 PNG 按图片发送；多帧转为 H.264 MP4 按视频发送，若时长不足 2 秒（百炼要求视频至少 2 秒）用 `-stream_loop -1 -t 2` 循环补齐。转换成功后删除原 GIF。ffmpeg 缺失、转换失败或开关关闭时不转码，GIF 只保存不附带（`build_parts` 会跳过并注明）。
+- **多模态请求**：当前消息的媒体总是附带，历史消息只附带最近 `AI_MEDIA_CONTEXT_MESSAGES` 条的媒体，总数不超过 `AI_MEDIA_MAX_CONTEXT_ITEMS`（当前消息优先）。图片用 `{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}`，视频用 `{"type":"video_url","video_url":{"url":"data:video/mp4;base64,..."}}`（百炼 OpenAI 兼容接口的写法）；没有媒体的消息仍是普通字符串 content，方便 provider 做 prompt 缓存。体积限制按百炼文档：图片按编码前文件字节（`AI_MEDIA_MAX_IMAGE_BYTES`），视频按 base64 编码后字符串必须小于 10MB（`AI_MEDIA_MAX_VIDEO_BASE64_BYTES`），整次请求媒体 base64 总量不超过 `AI_MEDIA_MAX_CONTEXT_BYTES`（DashScope 请求体 16 MiB）；超出的不附带，并在文本块末尾注明，避免模型编造画面。模型对含媒体的请求返回 400 时，agent 会去掉媒体 part 用纯文本重试一次（WARNING 记录），兼容不支持多模态的模型。
 - **并发与限流**：按群互斥，同一个群同一时间只跑一条 AI 链路，不同群可以并行处理；处理中收到的同群 @ 消息立即回复「上一条消息正在处理中，请稍后再问」，同群未 @ 的自动聊天消息直接跳过。开启 `AI_GROUP_CHAT_WITHOUT_AT` 后，未 @ 的群消息另按群每分钟限流，回复走被动消息。聊天记录、上下文和工具检索都按 `group_openid` 隔离，两个群互不串数据。
 - **私聊**：暂不支持。私聊事件会被直接忽略，指令和 AI 都只处理群聊。
 - **回复格式**：chat 和 knowledge 统一通过 `MessageSegment.markdown` 以 QQ 原生 Markdown（`msg_type=2`）发送，发送失败会以 WARNING 记录原因并自动回退纯文本。原因是 QQ 官方文档规定**群聊 @用户仅 markdown 消息支持**，纯文本 content 里的 mention 标签会原样显示。发送前两条链路都用 `mentions.py` 解析回复里的 `@昵称` / `@昵称#标识` / `@标识`，能解析到群成员时替换成 `<qqbot-at-user id="member_openid" />`，解析不到时保留 `@昵称` 并去掉标识。不要改用 `MessageSegment.mention_user`：adapter-qq 1.7.1 把它序列化成将要弃用的 `<@userid>`，群聊同样不渲染。QQ 原生 Markdown 只支持标题、粗体/斜体/删除线、链接、图片、列表、引用、分割线等有限语法，模型输出代码块时可能按普通文本显示。指令回复和 HTTP 接口仍是纯文本。

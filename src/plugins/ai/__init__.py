@@ -25,6 +25,7 @@ from . import (
     api,
     chat_log,
     config,
+    media,
     mentions,
     tools,
     workflow,
@@ -101,17 +102,36 @@ async def _record_group_message(event):
     if getattr(author, "bot", False):
         return
 
-    text = event.get_plaintext().strip()
-    if not text:
+    parsed = media.describe(event.get_message())
+    if not parsed.text and not parsed.attachments:
         return
+
+    message_id = getattr(event, "id", None) or None
+    if message_id:
+        try:
+            if await chat_log.has_message(event.group_openid, message_id):
+                return
+        except Exception:
+            logger.exception("群聊记录查重失败，继续记录本条消息")
+
+    # QQ 附件 URL 带签名会过期，收到就下载；失败只丢该文件，不影响文本
+    items: list[media.MediaItem] = []
+    if parsed.attachments:
+        try:
+            items = await media.download_all(
+                event.group_openid, message_id, parsed.attachments
+            )
+        except Exception:
+            logger.exception("媒体下载失败，本条消息按纯文本记录")
 
     try:
         await chat_log.record_user(
             event.group_openid,
             event.get_user_id(),
-            text,
-            message_id=getattr(event, "id", None) or None,
+            parsed.text,
+            message_id=message_id,
             username=getattr(author, "username", "") or "",
+            media=items,
         )
     except Exception:
         logger.exception("群聊记录写入失败")
@@ -165,10 +185,12 @@ chat = on_message(
 
 @chat.handle()
 async def handle_chat(bot: Bot, event: GroupMessageCreateEvent):
-    text = event.get_plaintext().strip()
+    # 图片 / 视频 / QQ 表情也会参与聊天：describe 会把它们变成
+    # [图片] / [视频] / [表情:名称] 这类文本标记，附件本体由 recorder 下载
+    parsed = media.describe(event.get_message())
     addressed = is_group_addressed(event)
 
-    if not text:
+    if not parsed.text and not parsed.attachments:
         if addressed:
             await chat.finish("目前只支持文字聊天哦，直接发文字给我就行～")
         return
@@ -203,13 +225,29 @@ async def handle_chat(bot: Bot, event: GroupMessageCreateEvent):
         try:
             history = await _load_history(event)
             author = getattr(event, "author", None)
-            current = chat_log.ChatLogEntry(
-                role="user",
-                user_openid=event.get_user_id(),
-                username=getattr(author, "username", "") or "",
-                content=text,
-                created_at=time.time(),
-            )
+            message_id = getattr(event, "id", None) or None
+            # recorder 已经把本条消息（含下载好的媒体）写进数据库，直接取回，
+            # 保证正文标记和媒体文件来自同一次记录
+            current: chat_log.ChatLogEntry | None = None
+            if message_id:
+                try:
+                    current = await chat_log.entry_for_message(
+                        event.group_openid, message_id
+                    )
+                except Exception:
+                    logger.exception("读取当前消息记录失败，按纯文本处理")
+            if current is None:
+                current = chat_log.ChatLogEntry(
+                    role="user",
+                    user_openid=event.get_user_id(),
+                    username=getattr(author, "username", "") or "",
+                    content=parsed.text,
+                    created_at=time.time(),
+                )
+            if current.media:
+                logger.info(
+                    f"当前消息附带 {len(current.media)} 个媒体（图片/视频）"
+                )
             try:
                 result = await workflow.run(current, history)
             except api.LLMError as e:
@@ -326,6 +364,24 @@ async def _on_startup():
             f"缓存 {config.AI_WEATHER_CACHE_TTL}s，"
             f"月度限额 {config.AI_WEATHER_MONTHLY_LIMIT or '不限'}）"
         )
+    logger.info(
+        f"图片/视频：收到即下载到 {media.media_root()}；"
+        + (
+            "已交给模型理解（"
+            f"单次最多 {config.AI_MEDIA_MAX_CONTEXT_ITEMS} 个，"
+            f"历史消息 {config.AI_MEDIA_CONTEXT_MESSAGES} 条，"
+            f"GIF 转码 {'开' if config.AI_MEDIA_GIF_TO_VIDEO else '关'}）"
+            if config.AI_MEDIA_ENABLED
+            else "AI_MEDIA_ENABLED=false，仅保存不交给模型"
+        )
+    )
+    if config.AI_MEDIA_ENABLED and config.AI_MEDIA_GIF_TO_VIDEO:
+        if not media.ffmpeg_available():
+            logger.warning(
+                "未找到 ffmpeg（AI_MEDIA_FFMPEG_PATH="
+                f"{config.AI_MEDIA_FFMPEG_PATH!r}），"
+                "动图 GIF 将按图片处理"
+            )
 
     try:
         index = await tools.check_knowledge_index()

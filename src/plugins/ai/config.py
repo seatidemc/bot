@@ -427,6 +427,46 @@ AI_WEATHER_MONTHLY_LIMIT: int = _int("ai_weather_monthly_limit", 50000)
 # 成功查询结果的内存缓存秒数，0 表示不缓存
 AI_WEATHER_CACHE_TTL: int = max(0, _int("ai_weather_cache_ttl", 300))
 
+# ─── 图片 / 视频 / 表情 ─────────────────────────────────────
+# QQ 附件 URL 带签名会过期，收到消息后总是立即下载到 data/media/；
+# 下面的开关只决定要不要把它们作为多模态 content part 交给模型。
+# 假设所用模型支持图片和视频理解（openai-completions 的 image_url /
+# video_url 写法），换成纯文本模型时需要设置 AI_MEDIA_ENABLED=false。
+AI_MEDIA_ENABLED: bool = _as_bool(_raw("ai_media_enabled"), True)
+# 历史消息附带媒体的条数（当前消息始终附带）；0 表示历史消息不带媒体
+AI_MEDIA_CONTEXT_MESSAGES: int = max(0, _int("ai_media_context_messages", 3))
+# 单次模型请求最多附带多少个媒体（图片 + 视频合计），当前消息优先
+AI_MEDIA_MAX_CONTEXT_ITEMS: int = max(
+    1, _int("ai_media_max_context_items", 6)
+)
+# 单次请求所有媒体的 base64 字符总量上限（不含 data: 前缀）。
+# 百炼 DashScope 域名的请求体上限为 16 MiB，留出提示词余量后默认 12 MiB；
+# 其他 OpenAI 兼容端点整体上限 64MB，可按需调高。
+AI_MEDIA_MAX_CONTEXT_BYTES: int = max(
+    1, _int("ai_media_max_context_bytes", 12 * 1024 * 1024)
+)
+# 单个附件的下载超时与体积上限（含 GIF 转视频前的原始文件）
+AI_MEDIA_DOWNLOAD_TIMEOUT: float = max(
+    1.0, _float("ai_media_download_timeout", 30.0)
+)
+AI_MEDIA_MAX_DOWNLOAD_BYTES: int = max(
+    1, _int("ai_media_max_download_bytes", 50 * 1024 * 1024)
+)
+# 图片上限按编码前的文件字节算；Qwen3.8 的 Base64 Data URI 上限为 20MB
+AI_MEDIA_MAX_IMAGE_BYTES: int = max(
+    1, _int("ai_media_max_image_bytes", 10 * 1024 * 1024)
+)
+# 视频上限按 base64 编码后的字符串算：百炼文档要求小于 10MB
+AI_MEDIA_MAX_VIDEO_BASE64_BYTES: int = max(
+    1, _int("ai_media_max_video_base64_bytes", 10_000_000)
+)
+# 动图 GIF 用 ffmpeg 转成 MP4 当视频交给模型；单帧 GIF 仍按图片处理
+AI_MEDIA_GIF_TO_VIDEO: bool = _as_bool(_raw("ai_media_gif_to_video"), True)
+AI_MEDIA_FFMPEG_PATH: str = _text("ai_media_ffmpeg_path", "ffmpeg")
+AI_MEDIA_FFMPEG_TIMEOUT: float = max(
+    1.0, _float("ai_media_ffmpeg_timeout", 60.0)
+)
+
 # 群内不 @ 也参与聊天，回复走被动消息
 AI_GROUP_CHAT_WITHOUT_AT: bool = _as_bool(
     _raw("ai_group_chat_without_at"), False
@@ -605,6 +645,48 @@ def validate_agent_configs() -> list[str]:
                 "web_fetch: AI_WEB_FETCH_MAX_CHARS 不能小于 500，"
                 f"当前为 {AI_WEB_FETCH_MAX_CHARS}"
             )
+
+    # 图片 / 视频：下载始终进行，这里校验交给模型时用到的参数
+    if AI_MEDIA_ENABLED:
+        if AI_MEDIA_DOWNLOAD_TIMEOUT <= 0:
+            problems.append(
+                "media: AI_MEDIA_DOWNLOAD_TIMEOUT 必须大于 0，"
+                f"当前为 {AI_MEDIA_DOWNLOAD_TIMEOUT}"
+            )
+        for name, value in (
+            ("AI_MEDIA_MAX_DOWNLOAD_BYTES", AI_MEDIA_MAX_DOWNLOAD_BYTES),
+            ("AI_MEDIA_MAX_IMAGE_BYTES", AI_MEDIA_MAX_IMAGE_BYTES),
+            (
+                "AI_MEDIA_MAX_VIDEO_BASE64_BYTES",
+                AI_MEDIA_MAX_VIDEO_BASE64_BYTES,
+            ),
+            ("AI_MEDIA_MAX_CONTEXT_BYTES", AI_MEDIA_MAX_CONTEXT_BYTES),
+        ):
+            if value <= 0:
+                problems.append(
+                    f"media: {name} 必须大于 0，当前为 {value}"
+                )
+        if AI_MEDIA_MAX_CONTEXT_ITEMS < 1:
+            problems.append(
+                "media: AI_MEDIA_MAX_CONTEXT_ITEMS 不能小于 1，"
+                f"当前为 {AI_MEDIA_MAX_CONTEXT_ITEMS}"
+            )
+        if AI_MEDIA_CONTEXT_MESSAGES < 0:
+            problems.append(
+                "media: AI_MEDIA_CONTEXT_MESSAGES 不能小于 0，"
+                f"当前为 {AI_MEDIA_CONTEXT_MESSAGES}"
+            )
+        if AI_MEDIA_GIF_TO_VIDEO:
+            if not AI_MEDIA_FFMPEG_PATH:
+                problems.append(
+                    "media: AI_MEDIA_GIF_TO_VIDEO 开启时 "
+                    "AI_MEDIA_FFMPEG_PATH 不能为空"
+                )
+            if AI_MEDIA_FFMPEG_TIMEOUT <= 0:
+                problems.append(
+                    "media: AI_MEDIA_FFMPEG_TIMEOUT 必须大于 0，"
+                    f"当前为 {AI_MEDIA_FFMPEG_TIMEOUT}"
+                )
 
     # 天气查询：配置 Key 后默认启用；启用时必须同时有 Key 和 API Host
     if AI_WEATHER_ENABLED:

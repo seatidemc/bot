@@ -14,7 +14,7 @@ from typing import Any
 
 from nonebot.log import logger
 
-from . import api, chat_log, config
+from . import api, chat_log, config, media
 from .tools import CHAT_TOOLS, KNOWLEDGE_TOOLS, Tool
 
 
@@ -129,26 +129,101 @@ _HISTORY_HEADER = "# 最近聊天记录"
 _CURRENT_HEADER = "# 当前消息"
 
 
+def _content_with_parts(
+    text: str,
+    parts: list[dict[str, Any]],
+    notes: list[str],
+) -> str | list[dict[str, Any]]:
+    """没有媒体时仍用普通字符串 content；有媒体时拼成多模态数组。
+
+    ``notes`` 是哪些媒体没附带上的说明（体积超限、文件丢失），放在文本块
+    末尾，避免模型以为占位标记对应的图片一定看得到。
+    """
+    body = text
+    if notes:
+        body = f"{body}\n\n（{'；'.join(notes)}）"
+    if not parts:
+        # 媒体全部没带上时也要把原因告诉模型，避免它假装看过图
+        return body
+    return [{"type": "text", "text": body}, *parts]
+
+
 def _build_history_message(
     history: list[chat_log.ChatLogEntry],
-) -> dict[str, str]:
+    parts: list[dict[str, Any]] | None = None,
+    notes: list[str] | None = None,
+) -> dict[str, Any]:
     transcript = "\n".join(
         chat_log.format_transcript_line(entry) for entry in history
     )
     return {
         "role": "user",
-        "content": f"{_HISTORY_HEADER}\n\n{transcript}",
-    }
-
-
-def _build_current_message(current: chat_log.ChatLogEntry) -> dict[str, str]:
-    return {
-        "role": "user",
-        "content": (
-            f"{_CURRENT_HEADER}\n\n"
-            f"{chat_log.format_transcript_line(current)}"
+        "content": _content_with_parts(
+            f"{_HISTORY_HEADER}\n\n{transcript}",
+            parts or [],
+            notes or [],
         ),
     }
+
+
+def _build_current_message(
+    current: chat_log.ChatLogEntry,
+    parts: list[dict[str, Any]] | None = None,
+    notes: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "role": "user",
+        "content": _content_with_parts(
+            f"{_CURRENT_HEADER}\n\n"
+            f"{chat_log.format_transcript_line(current)}",
+            parts or [],
+            notes or [],
+        ),
+    }
+
+
+async def _media_messages(
+    current: chat_log.ChatLogEntry,
+    history: list[chat_log.ChatLogEntry],
+) -> tuple[
+    dict[str, Any], dict[str, Any] | None
+]:
+    """构造带媒体的当前消息 + 历史消息。
+
+    当前消息的媒体总是优先附带；历史消息只取最近
+    ``AI_MEDIA_CONTEXT_MESSAGES`` 条里出现的媒体，总数不超过
+    ``AI_MEDIA_MAX_CONTEXT_ITEMS``。返回（当前消息, 历史消息或 None）。
+    """
+    if not config.AI_MEDIA_ENABLED:
+        return _build_current_message(current), (
+            _build_history_message(history) if history else None
+        )
+
+    budget = config.AI_MEDIA_MAX_CONTEXT_BYTES
+    current_parts, current_notes, used = await media.build_parts(
+        current.media, config.AI_MEDIA_MAX_CONTEXT_ITEMS, budget
+    )
+    current_message = _build_current_message(
+        current, current_parts, current_notes
+    )
+
+    history_items: list[media.MediaItem] = []
+    if config.AI_MEDIA_CONTEXT_MESSAGES > 0 and history:
+        for entry in history[-config.AI_MEDIA_CONTEXT_MESSAGES:]:
+            history_items.extend(entry.media)
+
+    history_message = None
+    if history:
+        remaining = max(
+            0, config.AI_MEDIA_MAX_CONTEXT_ITEMS - len(current_parts)
+        )
+        history_parts, history_notes, _ = await media.build_parts(
+            history_items, remaining, max(0, budget - used)
+        )
+        history_message = _build_history_message(
+            history, history_parts, history_notes
+        )
+    return current_message, history_message
 
 
 async def run_agent(
@@ -156,23 +231,45 @@ async def run_agent(
     current: chat_log.ChatLogEntry,
     history: list[chat_log.ChatLogEntry],
 ) -> str:
+    current_message, history_message = await _media_messages(
+        current, history
+    )
+
     messages: list[dict[str, Any]] = []
     if agent.model.system_prompt:
         messages.append(
             {"role": "system", "content": agent.model.system_prompt}
         )
-    if history:
-        messages.append(_build_history_message(history))
-    messages.append(_build_current_message(current))
+    if history_message is not None:
+        messages.append(history_message)
+    messages.append(current_message)
 
     empty_replies = 0
+    media_fallback = False
     while True:
-        result = await api.chat_completion(
-            agent.model,
-            messages,
-            tools=agent.tool_schemas(),
-            tool_choice="auto",
-        )
+        try:
+            result = await api.chat_completion(
+                agent.model,
+                messages,
+                tools=agent.tool_schemas(),
+                tool_choice="auto",
+            )
+        except api.LLMError as e:
+            # 配置的模型可能不支持 image_url / video_url；首次 400 时去掉
+            # 媒体 part 用纯文本重试一次，至少还能基于占位标记回复。
+            if (
+                not media_fallback
+                and e.status == 400
+                and media.has_media_parts(messages)
+            ):
+                media_fallback = True
+                logger.warning(
+                    f"[{agent.name}] 模型拒绝多模态内容（400），"
+                    "改为纯文本重试"
+                )
+                messages = media.strip_media_parts(messages)
+                continue
+            raise
 
         if result.tool_calls:
             messages.append(result.assistant_message())

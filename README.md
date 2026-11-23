@@ -9,6 +9,7 @@ Seatide Minecraft 服务器的 QQ 群机器人，基于 [NoneBot2](https://noneb
 - 群内命令：服务器状态（在线、人数、资源占用、预计释放时间）、一键启动服务器
 - 斜杠消息统一按指令处理；未知指令会明确回复「指令不存在」
 - AI 工作流：先查关键词词表（命中直接交给 knowledge），未命中再由 router 使用 TypeSafe System One 自动区分普通聊天与知识库问答，分别交给独立 agent 处理
+- 群消息里的图片、视频和 QQ 表情也会参与 AI 对话：附件收到即下载到 `data/media/`（QQ 附件 URL 会过期），GIF 动图自动转 MP4 按视频理解（需要 ffmpeg）
 - chat / knowledge 模型可分别配置端点、模型 id、温度、思考强度和提示词；router 可单独配置 API Key、端点、模型、超时和重试次数
 - agent 支持工具调用：chat agent 可检索群聊记录、查询中国大陆城市天气（和风天气）；knowledge agent 可查实时服务器状态、当前时间，并检索 llms.txt 知识库与抓取页面
 - 群内自动聊天支持每分钟限流，回复走被动消息，不占用主动消息额度
@@ -38,6 +39,7 @@ AGENTS.md                       # 面向开发者的实现细节
 - Python 3.11+
 - QQ 开放平台机器人（AppID + AppSecret）
 - AI 开启时：TypeSafe API Key（router）和 openai-completions 模型的 API Key（chat / knowledge，默认 DeepSeek）
+- AI 开启且需要理解图片 / 视频时：chat / knowledge 模型需支持多模态（否则设置 `AI_MEDIA_ENABLED=false`）；GIF 转视频另需 `ffmpeg`
 - 后端 `go-aliyunmc-v2` 运行在 `BACKEND_BASE_URL`（默认 `http://127.0.0.1:45678/bot-v1`，需包含 `/bot-v1` 前缀）
 
 ## 快速开始
