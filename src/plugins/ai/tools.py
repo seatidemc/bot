@@ -1281,7 +1281,7 @@ FETCH_DOC = Tool(
 )
 
 # 普通聊天 agent 只负责回忆群聊记录；实时状态、当前时间交给 knowledge
-CHAT_TOOLS: tuple[Tool, ...] = (RECALL_CHAT,)
+CHAT_TOOLS: tuple[Tool, ...] = (RECALL_CHAT,GET_CURRENT_TIME)
 
 # 知识库问答 agent：检索 llms.txt → fetch 正文，也负责实时状态和当前时间，
 # 并能像 /启动 指令一样触发一键启动
