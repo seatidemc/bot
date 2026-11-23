@@ -189,7 +189,7 @@ QQ_BOTS='[
 2. 非指令消息 → 进入 AI。AI 关闭（`AI_ENABLED=false`）时回复「暂未启动AI」。
 3. AI 开启 → router（TypeSafe System One 分类器）判断是普通聊天还是知识库问答。
 4. 普通聊天（包括乱码、无意义内容等无法归入知识库的消息）交给 chat agent，知识库问答交给 knowledge agent；各自有独立的系统提示词、模型配置和工具集。
-5. chat agent 可检索群聊记录；knowledge agent 可检索知识库、抓取页面，并查询实时服务器状态和当前时间。由模型自行决定何时结束工具调用并给出最终回复。
+5. chat agent 可检索群聊记录；knowledge agent 可检索知识库、抓取页面，并查询实时服务器状态和当前时间。由模型自行决定何时结束工具调用并给出最终回复。模型偶发返回空正文时会自动重试最多 2 次，并记录 `finish_reason` 便于排查。
 
 补充说明：
 
@@ -199,7 +199,7 @@ QQ_BOTS='[
 - 启动校验：`AI_ENABLED=true` 时会检查 router 的 API Key、BASE_URL、MODEL、timeout、knowledge 概率门槛，以及 chat / knowledge 的 API Key、BASE_URL、MODEL、系统提示词、temperature / timeout 和 `AI_KNOWLEDGE_LLMS_TXT_URL`；启动时还会实际拉取一次 llms.txt，确认可访问且能解析出条目。任何一项失败都会直接阻止启动，不会留到运行时降级。
 - router 通过 `typesafe-sdk` 调用 System One，不使用 openai-completions。若判为 knowledge 但 knowledge 概率低于 `AI_ROUTER_MIN_KNOWLEDGE_PROBABILITY`（默认 0.6），按 chat 处理，避免把闲聊送进知识库 agent。调用失败（超时 / 401 / 429 等）或返回的 intent 不在 `chat` / `knowledge` 中时不切换到其他 agent；具体错误只写日志，群内只回复统一提示（429 为「请求太频繁」，其余为「AI 暂时不可用」），不暴露内部报错。
 - chat / knowledge 固定使用 OpenAI Chat Completions 格式（openai-completions），通过官方 `openai` SDK 调用；对应的 `AI_*_BASE_URL` 填 API 根地址（如 `https://api.deepseek.com` 或 `https://example.com/v1`），SDK 会自动拼接 `/chat/completions`。
-- 每次路由以 INFO 记录 `AI 路由：chat/knowledge` 和 System One 的置信度；chat / knowledge 的每次模型调用记录 `LLM 用量[component/model]`：prompt / completion / 思考 token / 缓存命中情况，便于观察成本构成。
+- 每次路由以 INFO 记录 `AI 路由：chat/knowledge` 和 System One 的置信度；chat / knowledge 的每次模型调用记录 `LLM 用量[component/model]`：prompt / completion / 思考 token / 缓存命中情况，便于观察成本构成；最终发到群里的回复以 INFO 完整记录（`AI 回复[intent][群 openid]：...`），不截断。
 - chat / knowledge 的 API Key 可以分别配置；未配置时回退到 `AI_DEFAULT_API_KEY`（共用同一 Key 时只需填这一项）。router 的 Key 不参与这个回退，必须配置 `AI_ROUTER_API_KEY`。端点、模型 id、temperature、thinking effort、max tokens、超时和提示词也可以分别配置，未配置时回退到 `AI_DEFAULT_*` 默认值。
 - chat / knowledge 各使用一个独立的提示词文件，支持 `{{include: 相对路径}}` 复用共享片段（路径相对当前提示词文件，支持嵌套，带循环与深度保护）：把公共内容放到如 `prompts/shared/xxx.md`，在多个提示词里用 `{{include: shared/xxx.md}}` 引用即可，无需手工同步。include 失败（文件缺失、循环、嵌套过深）会让系统提示词为空，启动校验直接失败。router 不使用提示词文件，System One 请求只包含 state 和 Choice 问题。
 

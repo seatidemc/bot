@@ -117,6 +117,11 @@ async def _run_tool_calls(
     )
 
 
+# 模型偶发只返回空正文、finish_reason 仍是 stop（服务端抖动），
+# 与提示词和参数无关；原样重试有限次数，仍为空则交给上层兜底。
+_EMPTY_REPLY_RETRIES = 2
+
+
 async def run_agent(
     agent: Agent, text: str, history: list[dict[str, str]]
 ) -> str:
@@ -128,6 +133,7 @@ async def run_agent(
     messages.extend(history)
     messages.append({"role": "user", "content": text})
 
+    empty_replies = 0
     while True:
         result = await api.chat_completion(
             agent.model,
@@ -136,8 +142,20 @@ async def run_agent(
             tool_choice="auto",
         )
 
-        if not result.tool_calls:
+        if result.tool_calls:
+            messages.append(result.assistant_message())
+            messages.extend(await _run_tool_calls(agent, result.tool_calls))
+            empty_replies = 0
+            continue
+
+        if result.content:
             return result.content
 
-        messages.append(result.assistant_message())
-        messages.extend(await _run_tool_calls(agent, result.tool_calls))
+        empty_replies += 1
+        logger.warning(
+            f"[{agent.name}] 模型返回空正文"
+            f"（finish_reason={result.finish_reason or '未知'}，"
+            f"第 {empty_replies} 次）"
+        )
+        if empty_replies > _EMPTY_REPLY_RETRIES:
+            return ""

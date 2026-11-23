@@ -4,4 +4,4 @@
 
 # Seatide是什么？
 
-Seatide（中文名：潮汐）是一个Minecraft服务器，于2026年1月23日开启，服主是Subilan。
+Seatide 是一个Minecraft服务器，于2026年1月23日开启，服主是Subilan。

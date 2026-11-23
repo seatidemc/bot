@@ -207,6 +207,11 @@ async def handle_chat(bot: Bot, event: GroupMessageCreateEvent):
     if not reply:
         reply = "（AI 没有返回内容，换个问法试试？）"
 
+    # 记录实际发到群里的完整内容，不截断
+    logger.info(
+        f"AI 回复[{result.intent}][群 {event.group_openid}]：{reply}"
+    )
+
     try:
         await chat_log.record_bot(event.group_openid, reply)
     except Exception:
