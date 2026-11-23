@@ -1,4 +1,4 @@
-"""解析 agent 回复中的 @，转换成 QQ 的 mention 段。
+"""解析 agent 回复中的 @，转换成 QQ 群消息的 mention 语法。
 
 聊天记录里的发言人显示为 ``昵称#标识``（标识是 ``user_openid`` 后 6 位）。
 模型可以在回复里写：
@@ -7,8 +7,15 @@
 - ``@昵称#标识``：昵称重名、改过名或不确定是谁时，用标识定位；
 - ``@标识``：只写标识也能定位。
 
-解析成功的 @ 会替换成 ``MessageSegment.mention_user``，群里显示为真实 @；
-解析不到时保留 ``@昵称`` 文本，并且不把 ``#标识`` 原样发出去。
+解析成功的 @ 会替换成 ``<qqbot-at-user id="member_openid" />``，群里显示为
+真实 @；解析不到时保留 ``@昵称`` 文本，并且不把 ``#标识`` 原样发出去。
+
+两个坑（都不要改）：
+
+- QQ 官方文档规定群聊 ``@用户`` **仅 markdown 消息支持**，所以带 @ 的回复
+  必须整条按 markdown（``msg_type=2``）发送，纯文本 content 会原样显示标签；
+- 不要改用 ``MessageSegment.mention_user``：adapter-qq 1.7.1 把它序列化成
+  将要弃用的 ``<@userid>``，QQ 群消息同样不渲染。
 """
 
 from __future__ import annotations
@@ -16,8 +23,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import Iterable
-
-from nonebot.adapters.qq import Message, MessageSegment
 
 from . import chat_log
 
@@ -65,10 +70,10 @@ class MentionDirectory:
 
 @dataclass(frozen=True)
 class RenderedReply:
-    """解析结果：``text`` 是不带标识的纯文本，``message`` 含有 @ 段。"""
+    """解析结果：``text`` 是不带标识的纯文本，``markup`` 含 mention 标签。"""
 
     text: str
-    message: Message | None = None
+    markup: str | None = None
     mentions: int = 0
 
 
@@ -144,18 +149,20 @@ def _compile_pattern(names: Iterable[str]) -> re.Pattern[str] | None:
 def render(
     text: str, directory: MentionDirectory | None
 ) -> RenderedReply:
-    """把回复里的 @ 替换成 mention 段；没有可解析的 @ 时原样返回。"""
+    """把回复里的 @ 替换成 mention 标签；没有可解析的 @ 时原样返回。"""
     if directory is None or directory.pattern is None or "@" not in text:
         return RenderedReply(text)
 
-    segments: list[MessageSegment] = []
+    content: list[str] = []
+    plain_parts: list[str] = []
     pos = 0
     resolved = 0
     sanitized = False
 
     def add_text(chunk: str) -> None:
         if chunk:
-            segments.append(MessageSegment.text(chunk))
+            content.append(chunk)
+            plain_parts.append(chunk)
 
     for match in directory.pattern.finditer(text):
         target = directory.resolve(match)
@@ -172,7 +179,8 @@ def render(
 
         openid, name = target
         add_text(text[pos : match.start()])
-        segments.append(MessageSegment.mention_user(openid, name or None))
+        content.append(f'<qqbot-at-user id="{openid}" />')
+        plain_parts.append("@" + (name or directory.display_name.get(openid, "")))
         pos = match.end()
         resolved += 1
 
@@ -180,15 +188,8 @@ def render(
         return RenderedReply(text)
 
     add_text(text[pos:])
-    message = Message(segments)
-    plain = "".join(
-        segment.data["text"]
-        if segment.type == "text"
-        else "@" + str(segment.data.get("username") or "")
-        for segment in message
-    )
     return RenderedReply(
-        text=plain,
-        message=message if resolved else None,
+        text="".join(plain_parts),
+        markup="".join(content) if resolved else None,
         mentions=resolved,
     )

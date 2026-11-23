@@ -226,19 +226,16 @@ async def handle_chat(bot: Bot, event: GroupMessageCreateEvent):
     if not reply:
         reply = "（AI 没有返回内容，换个问法试试？）"
 
-    # chat 只发纯文本（可解析 @），knowledge 只发 Markdown（不解析 @）
-    if result.intent == "chat":
-        directory = None
-        if "@" in reply:
-            try:
-                directory = mentions.build(
-                    await chat_log.members(event.group_openid)
-                )
-            except Exception:
-                logger.warning("读取群成员失败，本次不解析 @", exc_info=True)
-        rendered = mentions.render(reply, directory)
-    else:
-        rendered = mentions.RenderedReply(reply)
+    # chat / knowledge 都在发送前解析 @，转成 markdown 里的 mention 标签
+    directory = None
+    if "@" in reply:
+        try:
+            directory = mentions.build(
+                await chat_log.members(event.group_openid)
+            )
+        except Exception:
+            logger.warning("读取群成员失败，本次不解析 @", exc_info=True)
+    rendered = mentions.render(reply, directory)
 
     # 记录实际发到群里的完整内容，不截断；标识不会进入记录
     logger.info(
@@ -250,38 +247,23 @@ async def handle_chat(bot: Bot, event: GroupMessageCreateEvent):
         await chat_log.record_bot(event.group_openid, rendered.text)
     except Exception:
         logger.exception("群聊记录写入失败")
-    await _send_reply(rendered, markdown=result.intent != "chat")
+    await _send_reply(rendered)
 
 
-async def _send_reply(
-    rendered: mentions.RenderedReply, *, markdown: bool
-) -> None:
-    """发送最终回复：knowledge 走 Markdown，chat 走纯文本（可带 @ 段）。"""
-    if markdown:
-        try:
-            await chat.send(MessageSegment.markdown(rendered.text))
-        except Exception:
-            logger.warning(
-                "Markdown 回复发送失败，回退为纯文本", exc_info=True
-            )
-            await chat.finish(rendered.text)
-            return
-        await chat.finish()
+async def _send_reply(rendered: mentions.RenderedReply) -> None:
+    """发送最终回复：统一走 Markdown（`msg_type=2`）。
+
+    群聊 @ 用户只有 markdown 消息支持，chat 要带 mention 就必须是 markdown；
+    knowledge 本来就用 markdown，于是两边统一。发送失败时回退纯文本。
+    """
+    content = rendered.markup or rendered.text
+    try:
+        await chat.send(MessageSegment.markdown(content))
+    except Exception:
+        logger.warning("Markdown 回复发送失败，回退为纯文本", exc_info=True)
+        await chat.finish(rendered.text)
         return
-
-    if rendered.message is not None:
-        try:
-            await chat.send(rendered.message)
-        except Exception:
-            logger.warning(
-                "带 @ 的回复发送失败，回退纯文本", exc_info=True
-            )
-            await chat.finish(rendered.text)
-            return
-        await chat.finish()
-        return
-
-    await chat.finish(rendered.text)
+    await chat.finish()
 
 
 # ─── 启动日志 ────────────────────────────────────────────────

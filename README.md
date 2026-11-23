@@ -198,7 +198,7 @@ QQ_BOTS='[
 - 只支持群聊：@bot 后发文字；开启自动聊天后，未 @ 的普通文字也会进入 AI。私聊消息直接忽略。
 - 群聊记录永久保存在 `data/chat_log.db`（含指令和未 @ 的闲聊），上下文按群共享、不按人隔离；每次请求把最近 `AI_CHAT_LOG_RECENT` 条记录按「用户名#标识 | 时间 | 发言内容」作为第一条 user 消息（顶部 `# 最近聊天记录`）预置，当前消息另起一条并带自己的发言人；标识取 `user_openid` 后 6 位，用于区分重名和改名。更早的内容由 chat agent 调用 `recall_chat` 按关键词和时间范围（如 `30m` / `12h` / `7d`）检索。
 - 按群互斥：同一个群同一时间只跑一条 AI 链路，不同群可以并行处理。处理中收到的同群 @ 消息会立即回复「上一条消息正在处理中，请稍后再问」，同群未 @ 的自动聊天消息直接跳过。聊天记录、上下文和工具检索按群隔离。
-- 回复格式按 intent 固定：chat 总是发纯文本并解析 `@昵称` / `@昵称#标识` / `@标识` 为真实 @；knowledge 总是发 QQ 原生 Markdown（`msg_type=2`），不解析 @；发送失败会自动回退纯文本。QQ 原生 Markdown 语法有限（标题、粗体/斜体、链接、列表、引用、分割线等），模型输出代码块时可能按普通文本显示。
+- 回复格式：chat 和 knowledge 都发 QQ 原生 Markdown（`msg_type=2`），发送失败会自动回退纯文本。群聊 @ 用户只有 markdown 消息支持，所以发送前会把回复里的 `@昵称` / `@昵称#标识` / `@标识` 解析成真实 @（`<qqbot-at-user id="..." />`），chat 和 knowledge 都适用。QQ 原生 Markdown 语法有限（标题、粗体/斜体、链接、列表、引用、分割线等），模型输出代码块时可能按普通文本显示。
 - 启动校验：`AI_ENABLED=true` 时会检查 router 的 API Key、BASE_URL、MODEL、timeout、knowledge 概率门槛、关键词词表（文件存在时必须能读取且每行都是合法正则），以及 chat / knowledge 的 API Key、BASE_URL、MODEL、系统提示词、temperature / timeout 和 `AI_KNOWLEDGE_LLMS_TXT_URL`；启动时还会实际拉取一次 llms.txt，确认可访问且能解析出条目。任何一项失败都会直接阻止启动，不会留到运行时降级。
 - 关键词快捷路由：词表文件每行一个正则，用 `re.search` 匹配，`^A` 表示前缀、`A$` 表示后缀、`.*A.*`（或直接写 `A`）表示任意位置包含；空行和 `#` 注释忽略。命中任意一行会固定判为 knowledge，不产生 System One 请求，也不受 knowledge 概率门槛影响。文件不存在时只记录 WARNING 并停用快捷路由；某行正则非法会让启动失败。
 - router 通过 `typesafe-sdk` 调用 System One，不使用 openai-completions。若判为 knowledge 但 knowledge 概率低于 `AI_ROUTER_MIN_KNOWLEDGE_PROBABILITY`（默认 0.6），按 chat 处理，避免把闲聊送进知识库 agent。调用失败（超时 / 401 / 429 等）或返回的 intent 不在 `chat` / `knowledge` 中时不切换到其他 agent；具体错误只写日志，群内只回复统一提示（429 为「请求太频繁」，其余为「AI 暂时不可用」），不暴露内部报错。

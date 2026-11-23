@@ -41,7 +41,7 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `src/plugins/ai/router.py` | TypeSafe System One 分类：`AsyncTypeSafeClient`、`Choice` 问题、knowledge 概率门槛、用量日志、错误映射 |
 | `src/plugins/ai/keywords.py` | 关键词快捷路由：读取独立词表，命中即直接判定 knowledge，不调用 System One |
 | `src/plugins/ai/agents.py` | 两个 agent 的简单 agent loop（工具调用、结果回填，轮数由模型自行结束） |
-| `src/plugins/ai/mentions.py` | 解析 chat 回复里的 `@昵称` / `@昵称#标识` / `@标识`，转换成 QQ mention 段，解析失败时去掉标识 |
+| `src/plugins/ai/mentions.py` | 解析回复里的 `@昵称` / `@昵称#标识` / `@标识`（chat / knowledge 都用），转换成 `<qqbot-at-user id="..." />`，解析失败时去掉标识 |
 | `src/plugins/ai/tools.py` | 聊天工具（群聊记录检索）与知识库工具（llms.txt 索引 + 正文全文检索、受限 fetch、实时状态、一键启动、时间） |
 | `src/plugins/ai/workflow.py` | 工作流编排：router → agent |
 | `src/plugins/ai/chat_log.py` | 群聊聊天记录永久存储（SQLite `data/chat_log.db`），供 user 消息上下文和 `recall_chat` 检索 |
@@ -179,7 +179,7 @@ SEATIDE_ENV=prod python bot.py   # 生产
 - **上下文**：只按群隔离，不按人隔离。所有群消息（含指令、未 @ 闲聊）落地到 `data/chat_log.db`；每次请求从该表取最近 `AI_CHAT_LOG_RECENT` 条、且不早于 `AI_CHAT_LOG_WINDOW_MINUTES` 分钟前的记录，以 INFO 记录实际条数。这些记录**不拼进 system prompt**，而是格式化为每行 `用户名#标识 | 时间 | 发言内容` 作为第一条 user 消息，顶部加 `# 最近聊天记录`；标识是 `user_openid` 后 6 位（bot 记为 `bot`，缺用户名时为 `玩家#标识`），因此同一用户改名、不同用户重名都能区分，system prompt 也保持稳定。当前消息单独作为第二条 user 消息，顶部 `# 当前消息`，同样带用户名和标识。router 只从中取最近 `AI_ROUTER_HISTORY_TURNS` 条用户消息（跳过 bot 回复和斜杠指令）用于分类，只看正文不看发言人；chat agent 可用 `recall_chat` 按关键词和时间范围（`Nd` / `Nh` / `Nm`，默认 `1h`）检索更早的记录；格式无法解析、或起点早于本群最早聊天记录时，工具会返回错误而不是静默调整范围，`0` 表示不限时间。
 - **并发与限流**：按群互斥，同一个群同一时间只跑一条 AI 链路，不同群可以并行处理；处理中收到的同群 @ 消息立即回复「上一条消息正在处理中，请稍后再问」，同群未 @ 的自动聊天消息直接跳过。开启 `AI_GROUP_CHAT_WITHOUT_AT` 后，未 @ 的群消息另按群每分钟限流，回复走被动消息。聊天记录、上下文和工具检索都按 `group_openid` 隔离，两个群互不串数据。
 - **私聊**：暂不支持。私聊事件会被直接忽略，指令和 AI 都只处理群聊。
-- **回复格式**：按 intent 固定。chat 总是发纯文本；发送前用 `mentions.py` 解析回复里的 `@昵称` / `@昵称#标识` / `@标识`，能解析到群成员时替换成 `MessageSegment.mention_user`（整条按 `msg_type=0` 的文本 + mention 段发送），解析不到时保留 `@昵称` 并去掉标识。knowledge 总是通过 `MessageSegment.markdown` 以 QQ 原生 Markdown（`msg_type=2`）发送，不解析 @；Markdown 发送失败会以 WARNING 记录原因并自动回退纯文本。QQ 原生 Markdown 只支持标题、粗体/斜体/删除线、链接、图片、列表、引用、分割线等有限语法，模型输出代码块时可能按普通文本显示。指令回复和 HTTP 接口仍是纯文本。
+- **回复格式**：chat 和 knowledge 统一通过 `MessageSegment.markdown` 以 QQ 原生 Markdown（`msg_type=2`）发送，发送失败会以 WARNING 记录原因并自动回退纯文本。原因是 QQ 官方文档规定**群聊 @用户仅 markdown 消息支持**，纯文本 content 里的 mention 标签会原样显示。发送前两条链路都用 `mentions.py` 解析回复里的 `@昵称` / `@昵称#标识` / `@标识`，能解析到群成员时替换成 `<qqbot-at-user id="member_openid" />`，解析不到时保留 `@昵称` 并去掉标识。不要改用 `MessageSegment.mention_user`：adapter-qq 1.7.1 把它序列化成将要弃用的 `<@userid>`，群聊同样不渲染。QQ 原生 Markdown 只支持标题、粗体/斜体/删除线、链接、图片、列表、引用、分割线等有限语法，模型输出代码块时可能按普通文本显示。指令回复和 HTTP 接口仍是纯文本。
 - **日志**：每次路由以 INFO 记录 `AI 路由：chat/knowledge`、System One 的 `confidence` 和两类概率（按概率降序），若返回的 choice 不是概率最高项则追加 WARNING；关键词命中时记录命中的正则并跳过 System One；chat / knowledge 的每次模型调用记录 `LLM 用量[component/model]`（prompt / completion / 思考 token / 缓存命中），router 另行记录 prompt / completion token 用量；每次工具调用以 INFO 记录工具名和传入参数，不记录工具返回；最终回复以 INFO 记录 `AI 回复[intent][群 openid]：<完整内容>`，不截断。
 - **知识库**：标准 llms.txt 索引（`# 标题`、`> 简介`、`## 章节`、`- [标题](URL): 说明`）；没有链接时把 llms.txt 自身当作可 fetch 的文档。索引、页面正文和全文检索用的正文集合都按 `AI_KNOWLEDGE_CACHE_TTL` 秒缓存，支持 Markdown、纯文本和 HTML，HTML 会去掉脚本/导航/页脚。检索需要全部页面正文，因此知识库页面不宜过多；单页抓取失败只跳过该页，不影响其他条目。
 - **抓取安全**：`fetch_doc` 只允许抓取 llms.txt 索引中出现过的 URL，以及 http(s) 协议；配置 `AI_KNOWLEDGE_FETCH_URL_REGEX` 后，URL 还必须完整匹配该正则（作为额外白名单），留空则不额外限制。重定向逐跳校验协议和正则；若文档会 301 到其他域名，正则必须同时放行目标域名（例如 Seatide 文档从 `seatidemc.github.io` 301 到 `http://seatide.net`）。不再限制回环/内网地址。
