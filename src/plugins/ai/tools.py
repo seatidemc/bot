@@ -930,7 +930,7 @@ FETCH_DOC = Tool(
     handler=_fetch_doc,
 )
 
-# 普通聊天 agent 只负责回忆群聊记录；实时状态、当前时间只在 /提问 链路提供
+# 普通聊天 agent 只负责回忆群聊记录；实时状态、当前时间交给 knowledge
 CHAT_TOOLS: tuple[Tool, ...] = (RECALL_CHAT,)
 
 # 知识库问答 agent：检索 llms.txt → fetch 正文，也负责实时状态和当前时间

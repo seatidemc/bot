@@ -2,7 +2,7 @@
 
 chat / knowledge 共用本模块，固定使用 ``openai-completions``
 格式，由传入的 ``ModelConfig`` 决定端点、模型 id、temperature、thinking
-effort 等。
+effort 等。router 使用 TypeSafe System One，不经过本模块，见 ``router.py``。
 """
 
 from __future__ import annotations

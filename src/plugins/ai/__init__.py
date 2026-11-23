@@ -1,9 +1,9 @@
-"""AI 对话插件：非指令群消息 → chat agent，/提问 → knowledge agent。
+"""AI 对话插件：群内非指令消息 → router → chat / knowledge agent。
 
 整体结构：
 - / 开头的消息一律视为指令；未知指令由 lab_client 的兜底匹配器回复。
-- /提问 后的内容交给 knowledge agent；其余非指令群消息交给 chat agent。
-- AI 关闭时回复「暂未启动AI」。
+- 非指令群消息进入本插件；AI 关闭时回复「暂未启动AI」。
+- AI 开启时先由 router 判断是普通聊天还是知识库问答，再交给对应 agent。
 - 只处理群聊；私聊消息直接忽略。
 - 群聊记录永久写入 data/chat_log.db，群内所有人共享同一份上下文。
 """
@@ -14,14 +14,13 @@ import asyncio
 import time
 from collections import deque
 
-from nonebot import get_driver, on_command, on_message
-from nonebot.adapters.qq import GroupMessageCreateEvent, Message
+from nonebot import get_driver, on_message
+from nonebot.adapters.qq import Bot, GroupMessageCreateEvent
 from nonebot.log import logger
-from nonebot.params import CommandArg
 from nonebot.permission import Permission
 from nonebot.rule import Rule
 
-from ..lab_client import GROUP, is_command_text, is_group_addressed
+from ..lab_client import is_command_text, is_group_addressed
 from . import api, chat_log, config, tools, workflow
 
 # ─── 匹配器 ──────────────────────────────────────────────────
@@ -148,51 +147,13 @@ def _user_facing_error(error: api.LLMError) -> str:
     return "😥 AI 暂时不可用，请稍后再试"
 
 
-async def _generate(
-    event: GroupMessageCreateEvent, intent: str, text: str
-) -> tuple[str | None, str | None]:
-    """在群锁内跑一次 AI 链路，返回 ``(回复, 错误提示)``，两者只有一个非空。"""
-    lock = _group_lock(event.group_openid)
-
-    # 检查与获取之间没有 await，保证互斥判断和拿锁是原子的
-    async with lock:
-        # 工具需要知道当前群；私聊不进入本插件，所以一定有值
-        token = tools.set_group_context(event.group_openid)
-        try:
-            history = await _load_history(event)
-            try:
-                result = await workflow.run(intent, text, history)
-            except api.LLMError as e:
-                # 具体错误只写日志，群里只给稳定、不含内部信息的提示
-                logger.warning(f"AI 调用失败: {e}")
-                return None, _user_facing_error(e)
-            except Exception:
-                logger.exception("AI 工作流执行异常")
-                return None, "😥 AI 暂时不可用，请稍后再试"
-        finally:
-            tools.reset_group_context(token)
-
-    reply = result.reply or "（AI 没有返回内容，换个问法试试？）"
-
-    # 记录实际发到群里的完整内容，不截断
-    logger.info(
-        f"AI 回复[{result.intent}][群 {event.group_openid}]：{reply}"
-    )
-
-    try:
-        await chat_log.record_bot(event.group_openid, reply)
-    except Exception:
-        logger.exception("群聊记录写入失败")
-    return reply, None
-
-
 chat = on_message(
     rule=chat_allowed, permission=GROUP_ANY, priority=10, block=True
 )
 
 
 @chat.handle()
-async def handle_chat(event: GroupMessageCreateEvent):
+async def handle_chat(bot: Bot, event: GroupMessageCreateEvent):
     text = event.get_plaintext().strip()
     addressed = is_group_addressed(event)
 
@@ -224,38 +185,38 @@ async def handle_chat(event: GroupMessageCreateEvent):
             logger.debug("本群 AI 链路正在处理其他消息，跳过未 @ 的群消息")
             return
 
-    reply, error = await _generate(event, "chat", text)
-    await chat.finish(error or reply)
+    # 检查与获取之间没有 await，保证互斥判断和拿锁是原子的
+    async with lock:
+        # 工具需要知道当前群；私聊不进入本插件，所以一定有值
+        token = tools.set_group_context(event.group_openid)
+        try:
+            history = await _load_history(event)
+            try:
+                result = await workflow.run(text, history)
+            except api.LLMError as e:
+                # 具体错误只写日志，群里只给稳定、不含内部信息的提示
+                logger.warning(f"AI 调用失败: {e}")
+                await chat.finish(_user_facing_error(e))
+            except Exception:
+                logger.exception("AI 工作流执行异常")
+                await chat.finish("😥 AI 暂时不可用，请稍后再试")
+        finally:
+            tools.reset_group_context(token)
 
+    reply = result.reply
+    if not reply:
+        reply = "（AI 没有返回内容，换个问法试试？）"
 
-# ─── 命令：/提问 ─────────────────────────────────────────────
+    # 记录实际发到群里的完整内容，不截断
+    logger.info(
+        f"AI 回复[{result.intent}][群 {event.group_openid}]：{reply}"
+    )
 
-ask = on_command(
-    "提问", aliases={"ask", "tw"}, permission=GROUP, priority=5, block=True
-)
-
-
-@ask.handle()
-async def handle_ask(
-    event: GroupMessageCreateEvent, question: Message = CommandArg()
-):
-    if not config.AI_ENABLED:
-        await ask.finish("暂未启动AI")
-        return
-
-    text = question.extract_plain_text().strip()
-    if not text:
-        await ask.finish(
-            "请在 /提问 后写上你的问题，例如：/提问 怎么加入服务器"
-        )
-        return
-
-    if _group_lock(event.group_openid).locked():
-        await ask.finish("上一条消息正在处理中，请稍后再问")
-        return
-
-    reply, error = await _generate(event, "knowledge", text)
-    await ask.finish(error or reply)
+    try:
+        await chat_log.record_bot(event.group_openid, reply)
+    except Exception:
+        logger.exception("群聊记录写入失败")
+    await chat.finish(reply)
 
 
 # ─── 启动日志 ────────────────────────────────────────────────
@@ -265,7 +226,7 @@ async def _on_startup():
     if not config.AI_ENABLED:
         logger.warning(
             "AI 已关闭（AI_ENABLED=false），"
-            "非指令消息和 /提问 将回复「暂未启动AI」"
+            "非指令消息将回复「暂未启动AI」"
         )
         return
 
@@ -280,8 +241,10 @@ async def _on_startup():
 
     logger.info(
         "AI 工作流已启用："
+        f"router={config.ROUTER.model}（System One，"
+        f"{config.ROUTER.base_url}） "
         f"chat={config.CHAT.model} "
-        f"knowledge={config.KNOWLEDGE.model}（/提问 触发）"
+        f"knowledge={config.KNOWLEDGE.model}"
     )
     logger.info(
         f"群聊记录：{chat_log.db_path()}，"

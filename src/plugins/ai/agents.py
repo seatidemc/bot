@@ -2,6 +2,7 @@
 
 每个 agent 拥有独立的模型配置、系统提示词和工具集；这里实现一个
 基于 openai SDK 的 Chat Completions 工具调用循环（agent loop）。
+router 本身在 ``router.py``，通过 TypeSafe System One 分类。
 """
 
 from __future__ import annotations
