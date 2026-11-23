@@ -308,6 +308,17 @@ async def _on_startup():
             f"命中后直接交给 knowledge（{config.AI_ROUTER_KEYWORDS_FILE}）"
         )
     logger.info(f"知识库索引：{config.AI_KNOWLEDGE_LLMS_TXT_URL}")
+    if config.AI_WEB_SEARCH_ENABLED:
+        logger.info(
+            f"联网搜索：已启用（{config.AI_WEB_SEARCH_BASE_URL}，"
+            f"默认 {config.AI_WEB_SEARCH_COUNT} 条/次）"
+        )
+    if config.AI_WEB_FETCH_ENABLED:
+        logger.info(
+            "网页抓取：已启用（web_fetch，"
+            f"超时 {config.AI_WEB_FETCH_TIMEOUT:g}s，"
+            f"最多 {config.AI_WEB_FETCH_MAX_CHARS} 字符）"
+        )
 
     try:
         index = await tools.check_knowledge_index()

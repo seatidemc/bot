@@ -159,7 +159,10 @@ QQ_BOTS='[
 | `AI_KNOWLEDGE_LLMS_TXT_URL` | 空 | 知识库 llms.txt 索引 URL，必须是 http/https；AI 开启时必填 |
 | `AI_KNOWLEDGE_FETCH_TIMEOUT` | `15` | 抓取 llms.txt / 页面的超时秒数 |
 | `AI_KNOWLEDGE_CACHE_TTL` | `300` | 索引/页面内存缓存秒数，0 表示不缓存 |
-| `AI_KNOWLEDGE_FETCH_URL_REGEX` | 空 | `fetch_doc` 允许抓取的 URL 正则（完整匹配）；空表示只受 llms.txt 索引约束，重定向逐跳校验。文档 301 到其他域名时，目标域名也必须被正则放行 |
+| `AI_KNOWLEDGE_FETCH_URL_REGEX` | 空 | `fetch_seatide_wiki_doc` 允许抓取的 URL 正则（完整匹配）；空表示只受 llms.txt 索引约束，重定向逐跳校验。文档 301 到其他域名时，目标域名也必须被正则放行 |
+| `AI_WEB_FETCH_ENABLED` | `true` | 是否给 knowledge agent 提供 `web_fetch`（抓取任意公开网页正文）；只允许 http/https 公网地址，回环 / 内网 / 保留地址拒绝，重定向逐跳校验 |
+| `AI_WEB_FETCH_TIMEOUT` | `20` | `web_fetch` 单次请求超时秒数 |
+| `AI_WEB_FETCH_MAX_CHARS` | `20000` | `web_fetch` 单次返回给模型的最大字符数，超出截断并附提示 |
 | `AI_CHAT_LOG_RECENT` | `20` | 作为第一条 user 消息预置的最近聊天记录条数，最大 200 |
 | `AI_CHAT_LOG_WINDOW_MINUTES` | `30` | 群聊上下文只取最近多少分钟内的记录，0 表示不限时间 |
 | `AI_ROUTER_HISTORY_TURNS` | `3` | router 参考最近多少条用户消息（跳过 bot 回复和斜杠指令），用于理解追问和指代 |
@@ -255,10 +258,10 @@ AI_KNOWLEDGE_LLMS_TXT_URL=https://docs.example.com/llms.txt
 工作方式：
 
 1. knowledge agent 先调用 `search_knowledge`，拉取并检索 llms.txt，返回匹配条目的标题、URL 和说明；不传 `query` 时直接列出全部条目（知识库页面较少时便于先看全貌），`limit` 控制最多返回条数（检索默认 5 条，不传 `query` 时默认全部）。
-2. 模型再用 `fetch_doc` 抓取相关页面正文，回答用户问题。
+2. 模型再用 `fetch_seatide_wiki_doc` 抓取相关页面正文，回答用户问题。
 3. 页面支持 Markdown、纯文本和 HTML；HTML 会自动提取正文并去掉脚本、导航、页脚。
 4. 索引和页面默认缓存 `AI_KNOWLEDGE_CACHE_TTL` 秒。
-5. `fetch_doc` 只允许抓取 llms.txt 中列出的 URL，不能抓取任意地址。
+5. `fetch_seatide_wiki_doc` 只允许抓取 llms.txt 中列出的 URL，不能抓取任意地址；Wiki 之外的信息用 `web_search` 搜索，需要正文时用 `web_fetch` 抓取公开链接（拒绝内网 / 本机地址）。
 6. `AI_ENABLED=true` 时启动阶段会检查 `AI_KNOWLEDGE_LLMS_TXT_URL` 是否存在且为 http(s) URL，并实际拉取一次 llms.txt；拉取失败或解析不到条目会直接启动失败。
 
 ### 自动聊天（不 @）

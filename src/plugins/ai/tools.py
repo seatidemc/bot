@@ -4,14 +4,19 @@
 - ``search_knowledge`` 先读 llms.txt 索引，再按 TTL 抓取索引内页面的正文，
   在标题、章节、说明和正文上做全文检索，返回匹配条目、URL 和正文摘要；
   不传 query 时只列出索引条目；
-- ``fetch_doc`` 只允许抓取索引中出现过的 URL，返回页面正文。
+- ``fetch_seatide_wiki_doc`` 只允许抓取索引中出现过的 URL，返回页面正文；
+- ``web_fetch`` 抓取任意公网 URL 的正文（如 ``web_search`` 结果的内页），
+  拒绝回环 / 内网 / 保留地址，重定向逐跳校验。
 """
 
 from __future__ import annotations
 
 import asyncio
+import inspect
+import ipaddress
 import math
 import re
+import socket
 import time
 from collections import OrderedDict
 from contextvars import ContextVar, Token
@@ -82,6 +87,179 @@ async def _get_current_time() -> str:
         f"{now.strftime('%Y-%m-%d %H:%M:%S %z')} "
         f"星期{weekdays[now.weekday()]}"
     )
+
+
+# ─── 联网搜索：DeepSeek Search API ───────────────────────────
+#
+# 客户端直接调用 POST /v1/tools/search，而不是声明服务端工具
+# deepseek_web_search：知识库 agent 走的是与 provider 无关的
+# openai-completions agent loop，服务端工具依赖 DeepSeek 自家模型和
+# 思考格式，换端点就会失效。Search API 是独立 HTTP 接口，任何模型都能用。
+
+_WEB_SEARCH_MAX_COUNT = 10
+_WEB_SEARCH_SUMMARY_LIMIT = 1000
+
+
+def _search_count(value: Any) -> int:
+    """把工具参数 count 转成 1~10 的条数；未提供时用配置默认值。"""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return config.AI_WEB_SEARCH_COUNT
+    if isinstance(value, bool):
+        raise ValueError
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise ValueError from None
+    if number < 1:
+        raise ValueError
+    return min(number, _WEB_SEARCH_MAX_COUNT)
+
+
+def _search_error_text(response: httpx.Response) -> str:
+    """读取 Search API 错误响应中的说明，只用于日志。"""
+    try:
+        body = response.json()
+    except ValueError:
+        return response.text[:200]
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            return str(error["message"])[:300]
+    return str(body)[:300]
+
+
+def _search_error_message(status: int) -> str:
+    """把 HTTP 状态码映射成给模型看的说明，不暴露端点。"""
+    if status == 401:
+        return "联网搜索失败：API Key 无效（AI_WEB_SEARCH_API_KEY）。"
+    if status == 402:
+        return "联网搜索失败：账户余额不足。"
+    if status == 403:
+        return "联网搜索失败：请求被搜索服务的安全策略拒绝。"
+    if status == 404:
+        return "联网搜索失败：搜索服务未能获取可用内容。"
+    if status == 429:
+        return "联网搜索失败：请求过于频繁，请稍后再试。"
+    if status >= 500 or status == 408:
+        return "联网搜索失败：搜索服务暂时不可用，请稍后再试。"
+    return f"联网搜索失败（HTTP {status}）。"
+
+
+def _format_web_result(index: int, item: dict[str, Any]) -> str:
+    title = str(item.get("title") or "").strip() or "（无标题）"
+    lines = [f"{index}. {title}"]
+
+    url = str(item.get("url") or "").strip()
+    if url:
+        lines.append(f"   URL：{url}")
+
+    meta: list[str] = []
+    site_name = str(item.get("site_name") or "").strip()
+    if site_name:
+        meta.append(site_name)
+    date = str(item.get("date") or "").strip()
+    if date:
+        # 官方格式为 UTC RFC 3339，展示日期即可
+        meta.append(date[:10])
+    authority = item.get("authority")
+    if isinstance(authority, int) and authority >= 3:
+        meta.append("高权威来源")
+    if meta:
+        lines.append(f"   {' · '.join(meta)}")
+
+    summary = str(item.get("summary") or item.get("snippet") or "").strip()
+    if summary:
+        if len(summary) > _WEB_SEARCH_SUMMARY_LIMIT:
+            summary = f"{summary[:_WEB_SEARCH_SUMMARY_LIMIT]}…"
+        lines.append(f"   摘要：{summary}")
+    return "\n".join(lines)
+
+
+async def _web_search(query: str | None = None, count: Any = None) -> str:
+    text = str(query or "").strip()
+    if not text:
+        return "搜索词为空，请提供要搜索的内容。"
+
+    try:
+        wanted = _search_count(count)
+    except ValueError:
+        return (
+            f"count 参数无效：{count!r} 不是正整数。"
+            "请传 1-10 的整数，或省略 count 使用默认值。"
+        )
+
+    api_key = config.AI_WEB_SEARCH_API_KEY
+    if not api_key:
+        return "联网搜索未配置 API Key（AI_WEB_SEARCH_API_KEY），暂时无法使用。"
+
+    payload = {
+        "query": text[:128],
+        "count": wanted,
+        # 网页正文可能很长；summary 是官方给模型阅读的长摘要，
+        # 对群聊回答已经足够，不需要再拉全文
+        "need_content": False,
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(config.AI_WEB_SEARCH_TIMEOUT)
+        ) as client:
+            response = await client.post(
+                config.AI_WEB_SEARCH_ENDPOINT,
+                headers=headers,
+                json=payload,
+            )
+    except httpx.TimeoutException:
+        logger.warning(f"联网搜索超时：{text}")
+        return "联网搜索超时，请稍后再试。"
+    except httpx.HTTPError as e:
+        logger.warning(
+            f"联网搜索网络错误：{text}（{e.__class__.__name__}: {e}）"
+        )
+        return f"联网搜索失败：网络错误（{e.__class__.__name__}）。"
+
+    if response.status_code != 200:
+        logger.warning(
+            f"联网搜索失败：HTTP {response.status_code}："
+            f"{_search_error_text(response)}"
+        )
+        return _search_error_message(response.status_code)
+
+    try:
+        data = response.json()
+    except ValueError:
+        logger.warning("联网搜索返回了无法解析的响应")
+        return "联网搜索失败：服务返回了无法解析的内容。"
+
+    results = data.get("results") if isinstance(data, dict) else None
+    if not isinstance(results, list):
+        logger.warning("联网搜索响应缺少 results 数组")
+        return "联网搜索失败：服务返回格式不符合预期。"
+
+    if not results:
+        logger.info(f"联网搜索：{text}（无结果）")
+        return (
+            f"联网搜索「{text}」没有找到结果。"
+            "可以换个关键词、减少限定词，或改用英文再试。"
+        )
+
+    body = "\n\n".join(
+        _format_web_result(i + 1, item)
+        for i, item in enumerate(results[:wanted])
+        if isinstance(item, dict)
+    )
+    if not body:
+        logger.warning("联网搜索结果的条目格式不符合预期")
+        return "联网搜索失败：服务返回格式不符合预期。"
+
+    logger.info(f"联网搜索：{text}（{len(results)} 条）")
+    return f"联网搜索结果（{text}）：\n\n{body}"
 
 
 # ─── 群聊记录检索 ────────────────────────────────────────────
@@ -513,15 +691,33 @@ def _decode_body(
     raise KnowledgeError(f"不支持的内容类型：{content_type or '未知'}")
 
 
+async def _read_body(
+    resp: httpx.Response, max_bytes: int | None
+) -> bytes:
+    """读取响应体；``max_bytes`` 不为空时最多读这么多字节。"""
+    if max_bytes is None:
+        return await resp.aread()
+
+    buffer = bytearray()
+    async for chunk in resp.aiter_bytes():
+        buffer.extend(chunk)
+        if len(buffer) >= max_bytes:
+            del buffer[max_bytes:]
+            break
+    return bytes(buffer)
+
+
 async def _fetch_document(
     url: str,
     timeout: float,
     *,
-    url_check: Callable[[str], None] | None = None,
+    url_check: Callable[[str], Awaitable[None] | None] | None = None,
+    max_bytes: int | None = None,
 ) -> tuple[str, str]:
     """抓取文本/Markdown/HTML 页面，手动校验每一次重定向。
 
-    ``url_check`` 会在请求的每一跳上执行，避免重定向绕过白名单。
+    ``url_check`` 会在请求的每一跳上执行，避免重定向绕过白名单；
+    既可以传同步函数，也可以传协程函数。``max_bytes`` 限制读取的原始字节数。
     """
     current = url.strip()
     headers = {"User-Agent": _USER_AGENT, "Accept": _ACCEPT}
@@ -533,7 +729,9 @@ async def _fetch_document(
             for _ in range(4):
                 _ensure_http_url(current)
                 if url_check is not None:
-                    url_check(current)
+                    checked = url_check(current)
+                    if inspect.isawaitable(checked):
+                        await checked
                 async with client.stream("GET", current, headers=headers) as resp:
                     if resp.status_code in _REDIRECT_STATUS:
                         location = resp.headers.get("location")
@@ -551,7 +749,7 @@ async def _fetch_document(
                         .strip()
                         .lower()
                     )
-                    raw = await resp.aread()
+                    raw = await _read_body(resp, max_bytes)
                     encoding = resp.encoding or "utf-8"
                     return _decode_body(raw, encoding, content_type), current
     except httpx.TimeoutException as e:
@@ -1106,7 +1304,7 @@ async def _search_knowledge(
         )
         return (
             f"知识库条目（{scope}，来自 {index.url}）：\n{body}\n\n"
-            "如需正文，请用 fetch_doc 抓取上面的 URL。"
+            "如需正文，请用 fetch_seatide_wiki_doc 抓取上面的 URL。"
         )
 
     docs = await _get_docs(index)
@@ -1131,11 +1329,11 @@ async def _search_knowledge(
     return (
         f"知识库全文检索结果（来自 {index.url}）：\n{body}\n\n"
         "摘要已包含正文相关内容时可直接作答；"
-        "需要更多细节再用 fetch_doc 抓取上面的 URL。"
+        "需要更多细节再用 fetch_seatide_wiki_doc 抓取上面的 URL。"
     )
 
 
-async def _fetch_doc(url: str) -> str:
+async def _fetch_seatide_wiki_doc(url: str) -> str:
     raw = str(url or "").strip()
     if not raw:
         return "URL 为空。"
@@ -1169,6 +1367,110 @@ async def _fetch_doc(url: str) -> str:
         return f"抓取失败：{e}"
 
     return f"URL：{normalized}\n\n{text}"
+
+
+# ─── 通用网页抓取：任意公网 URL ──────────────────────────────
+#
+# web_search 只返回摘要；需要正文时由 web_fetch 抓取。与知识库抓取不同，
+# 这里没有 llms.txt 白名单，因此必须自己挡掉回环 / 内网 / 保留地址，
+# 避免模型被网页内容或用户诱导去读本机后端（127.0.0.1:45678）或其他内网服务。
+
+_WEB_FETCH_MAX_BYTES = 2 * 1024 * 1024
+
+_BLOCKED_HOST_SUFFIXES = (
+    ".localhost",
+    ".local",
+    ".internal",
+    ".home.arpa",
+)
+_BLOCKED_HOSTNAMES = {
+    "localhost",
+    "localhost.localdomain",
+    "ip6-localhost",
+}
+
+
+async def _ensure_public_url(url: str) -> None:
+    """只允许 http(s) 且解析到公网地址的 URL；重定向每一跳都会调用。"""
+    _ensure_http_url(url)
+
+    parsed = urlparse(url)
+    host = parsed.hostname
+    if not host:
+        raise KnowledgeError("URL 缺少主机名")
+
+    lowered = host.strip().rstrip(".").lower()
+    if lowered in _BLOCKED_HOSTNAMES or lowered.endswith(
+        _BLOCKED_HOST_SUFFIXES
+    ):
+        raise KnowledgeError(f"不允许抓取本机或内网主机：{host}")
+
+    try:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError:
+        raise KnowledgeError("URL 端口无效") from None
+
+    try:
+        infos = await asyncio.get_running_loop().run_in_executor(
+            None,
+            socket.getaddrinfo,
+            host,
+            port,
+            0,
+            socket.SOCK_STREAM,
+        )
+    except (socket.gaierror, UnicodeError) as e:
+        raise KnowledgeError(f"无法解析主机名：{host}") from e
+
+    if not infos:
+        raise KnowledgeError(f"无法解析主机名：{host}")
+
+    for info in infos:
+        address = str(info[4][0])
+        try:
+            ip = ipaddress.ip_address(address.split("%", 1)[0])
+        except ValueError:
+            raise KnowledgeError(f"无法识别的地址：{address}") from None
+        if not ip.is_global:
+            raise KnowledgeError(
+                f"不允许抓取内网或保留地址：{host} -> {address}"
+            )
+
+
+async def _web_fetch(url: str) -> str:
+    raw = str(url or "").strip()
+    if not raw:
+        return "URL 为空。"
+
+    target = raw.split("#", 1)[0]
+    try:
+        parsed = urlparse(target)
+    except ValueError:
+        return f"URL 无效：{raw}"
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return "请提供完整的 http/https URL。"
+
+    try:
+        text, final_url = await _fetch_document(
+            target,
+            config.AI_WEB_FETCH_TIMEOUT,
+            url_check=_ensure_public_url,
+            max_bytes=_WEB_FETCH_MAX_BYTES,
+        )
+    except KnowledgeError as e:
+        logger.warning(f"网页抓取失败：{target}（{e}）")
+        return f"网页抓取失败：{e}"
+
+    limit = config.AI_WEB_FETCH_MAX_CHARS
+    note = ""
+    if len(text) > limit:
+        text = text[:limit]
+        note = f"\n\n（内容过长，已截断到前 {limit} 字符）"
+
+    if not text.strip():
+        return f"URL：{final_url}\n\n（页面没有可提取的文本内容）"
+
+    return f"URL：{final_url}\n\n{text}{note}"
 
 
 # ─── 工具注册 ────────────────────────────────────────────────
@@ -1262,34 +1564,89 @@ SEARCH_KNOWLEDGE = Tool(
     handler=_search_knowledge,
 )
 
-FETCH_DOC = Tool(
-    name="fetch_doc",
+FETCH_SEATIDE_WIKI_DOC = Tool(
+    name="fetch_seatide_wiki_doc",
     description=(
-        "获取知识库链接对应正文"
+        "获取 Seatide Wiki 知识库链接对应正文；"
+        "只能抓取 search_knowledge 返回的 llms.txt 条目 URL"
     ),
     parameters={
         "type": "object",
         "properties": {
             "url": {
                 "type": "string",
-                "description": "完整知识库文档 URL",
+                "description": "search_knowledge 返回的完整知识库文档 URL",
             }
         },
         "required": ["url"],
     },
-    handler=_fetch_doc,
+    handler=_fetch_seatide_wiki_doc,
+)
+
+WEB_SEARCH = Tool(
+    name="web_search",
+    description=(
+        "联网搜索公开网页，返回标题、链接、发布时间和摘要，"
+        "用于知识库之外或需要最新信息的问题；"
+        "Seatide 服务器自身的问题优先用 search_knowledge"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": (
+                    "搜索词，最多 128 字符。用简洁的关键词或完整问题，"
+                    "支持 site:、lang:、after:、before:、精确短语等语法"
+                ),
+            },
+            "count": {
+                "type": "integer",
+                "description": "返回结果条数，默认 5，最大 10",
+            },
+        },
+        "required": ["query"],
+    },
+    handler=_web_search,
+)
+
+WEB_FETCH = Tool(
+    name="web_fetch",
+    description=(
+        "抓取公开网页正文（HTML 自动转纯文本），"
+        "用于读取 web_search 结果或其他公开链接的完整内容；"
+        "Seatide Wiki 的链接请用 fetch_seatide_wiki_doc。"
+        "只支持 http/https 公网地址，不能访问内网、本机或非网页文件"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "完整的 http/https 网页 URL",
+            },
+        },
+        "required": ["url"],
+    },
+    handler=_web_fetch,
 )
 
 # 普通聊天 agent 只负责回忆群聊记录；实时状态、当前时间交给 knowledge
-CHAT_TOOLS: tuple[Tool, ...] = (RECALL_CHAT,GET_CURRENT_TIME)
+CHAT_TOOLS: tuple[Tool, ...] = (RECALL_CHAT, GET_CURRENT_TIME)
 
 # 知识库问答 agent：检索 llms.txt → fetch 正文，也负责实时状态和当前时间，
-# 并能像 /启动 指令一样触发一键启动
-KNOWLEDGE_TOOLS: tuple[Tool, ...] = (
+# 并能像 /启动 指令一样触发一键启动；配置了联网搜索 Key 时再加一个
+# DeepSeek Search API 工具，启用 web_fetch 时再加通用网页抓取
+_KNOWLEDGE_TOOLS: list[Tool] = [
     SEARCH_KNOWLEDGE,
-    FETCH_DOC,
+    FETCH_SEATIDE_WIKI_DOC,
     GET_SERVER_STATUS,
     START_SERVER,
     GET_CURRENT_TIME,
-    RECALL_CHAT
-)
+    RECALL_CHAT,
+]
+if config.AI_WEB_SEARCH_ENABLED:
+    _KNOWLEDGE_TOOLS.append(WEB_SEARCH)
+if config.AI_WEB_FETCH_ENABLED:
+    _KNOWLEDGE_TOOLS.append(WEB_FETCH)
+KNOWLEDGE_TOOLS: tuple[Tool, ...] = tuple(_KNOWLEDGE_TOOLS)

@@ -352,8 +352,53 @@ AI_KNOWLEDGE_FETCH_TIMEOUT: float = max(
 )
 # 索引/页面内容的内存缓存秒数，0 表示不缓存
 AI_KNOWLEDGE_CACHE_TTL: int = max(0, _int("ai_knowledge_cache_ttl", 300))
-# fetch_doc 允许抓取的 URL 正则（完整匹配）；为空表示只受 llms.txt 索引约束
+# fetch_seatide_wiki_doc 允许抓取的 URL 正则（完整匹配）；为空表示只受
+# llms.txt 索引约束
 AI_KNOWLEDGE_FETCH_URL_REGEX: str = _text("ai_knowledge_fetch_url_regex")
+
+# 通用网页抓取：读取任意公开网页的正文（web_search 结果的内页等）。
+# 默认开启；只允许 http/https 公网地址，重定向逐跳校验。
+AI_WEB_FETCH_ENABLED: bool = _as_bool(_raw("ai_web_fetch_enabled"), True)
+AI_WEB_FETCH_TIMEOUT: float = max(
+    1.0, _float("ai_web_fetch_timeout", 20.0)
+)
+# 单次返回给模型的最大字符数，超出截断并附提示
+AI_WEB_FETCH_MAX_CHARS: int = max(500, _int("ai_web_fetch_max_chars", 20000))
+
+# 联网搜索：DeepSeek Search API（POST /v1/tools/search）。
+# 与 chat / knowledge 的模型端点相互独立：默认端点固定为 DeepSeek 官方，
+# API Key 不会回退到 AI_DEFAULT_API_KEY（默认模型通常是其他 provider）。
+# 未配置 Key 时默认关闭；配置 Key 后自动启用，也可以显式设
+# AI_WEB_SEARCH_ENABLED=false 关闭。调用按成功请求计费，见官方文档。
+AI_WEB_SEARCH_API_KEY: str = _text("ai_web_search_api_key")
+AI_WEB_SEARCH_BASE_URL: str = (
+    _text("ai_web_search_base_url") or "https://api.deepseek.com"
+).rstrip("/")
+AI_WEB_SEARCH_ENABLED: bool = _as_bool(
+    _raw("ai_web_search_enabled"), bool(AI_WEB_SEARCH_API_KEY)
+)
+AI_WEB_SEARCH_TIMEOUT: float = max(
+    1.0, _float("ai_web_search_timeout", 20.0)
+)
+# 每次默认返回多少条结果（工具参数可在 1~10 之间覆盖）
+AI_WEB_SEARCH_COUNT: int = min(50, max(1, _int("ai_web_search_count", 5)))
+
+
+def _search_endpoint(base_url: str) -> str:
+    """Search API 的完整端点；BASE_URL 填 API 根地址。
+
+    如 ``https://api.deepseek.com``（代码补 ``/v1/tools/search``），
+    也接受已带 ``/v1`` 或完整端点的写法。
+    """
+    base = base_url.rstrip("/")
+    if base.endswith("/v1/tools/search"):
+        return base
+    if base.endswith("/v1"):
+        return f"{base}/tools/search"
+    return f"{base}/v1/tools/search"
+
+
+AI_WEB_SEARCH_ENDPOINT: str = _search_endpoint(AI_WEB_SEARCH_BASE_URL)
 
 # 群内不 @ 也参与聊天，回复走被动消息
 AI_GROUP_CHAT_WITHOUT_AT: bool = _as_bool(
@@ -477,6 +522,41 @@ def validate_agent_configs() -> list[str]:
             problems.append(
                 "knowledge: AI_KNOWLEDGE_FETCH_URL_REGEX "
                 f"不是合法正则：{e}"
+            )
+
+    # 联网搜索：显式开启或配置了 Key 时才参与链路
+    if AI_WEB_SEARCH_ENABLED:
+        if not AI_WEB_SEARCH_API_KEY:
+            problems.append(
+                "web_search: 已启用联网搜索但未配置 API Key"
+                "（AI_WEB_SEARCH_API_KEY）"
+            )
+        if not _valid_http_url(AI_WEB_SEARCH_BASE_URL):
+            problems.append(
+                "web_search: AI_WEB_SEARCH_BASE_URL 必须是 http/https URL，"
+                f"当前为 {AI_WEB_SEARCH_BASE_URL!r}"
+            )
+        if AI_WEB_SEARCH_TIMEOUT <= 0:
+            problems.append(
+                "web_search: AI_WEB_SEARCH_TIMEOUT 必须大于 0，"
+                f"当前为 {AI_WEB_SEARCH_TIMEOUT}"
+            )
+        if not (1 <= AI_WEB_SEARCH_COUNT <= 50):
+            problems.append(
+                "web_search: AI_WEB_SEARCH_COUNT 必须在 1~50 之间，"
+                f"当前为 {AI_WEB_SEARCH_COUNT}"
+            )
+
+    if AI_WEB_FETCH_ENABLED:
+        if AI_WEB_FETCH_TIMEOUT <= 0:
+            problems.append(
+                "web_fetch: AI_WEB_FETCH_TIMEOUT 必须大于 0，"
+                f"当前为 {AI_WEB_FETCH_TIMEOUT}"
+            )
+        if AI_WEB_FETCH_MAX_CHARS < 500:
+            problems.append(
+                "web_fetch: AI_WEB_FETCH_MAX_CHARS 不能小于 500，"
+                f"当前为 {AI_WEB_FETCH_MAX_CHARS}"
             )
 
     return problems
