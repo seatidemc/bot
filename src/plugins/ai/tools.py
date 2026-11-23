@@ -1663,15 +1663,9 @@ WEB_FETCH = Tool(
 GET_WEATHER = Tool(
     name="get_weather",
     description=(
-        "查询中国大陆城市的和风天气数据。支持：实时天气（current，"
-        "附带当前生效预警）、分钟级降水（minutely，未来2小时，仅覆盖"
-        "中国大陆）、逐小时预报（hourly，最多240小时）、每日预报"
-        "（daily，最多10天）、天气预警（alerts）、生活指数（indices）、"
-        "实时空气质量（air）和空气质量预报（air_daily，未来3天）。"
+        "查询中国大陆城市的和风天气数据，城市与查询类型见对应参数说明。"
         "用户问气温、天气、下不下雨、要不要带伞、穿衣、紫外线、"
         "空气质量、预警等时调用。"
-        "city 传城市/区县中文名，也支持“经度,纬度”（lon,lat）或"
-        "和风天气 LocationID；跨省重名时可同时传 adm（省或地级市）。"
         "重名时自动选最匹配结果，并在结果开头注明匹配到的省市；"
         "不要因为重名反问用户，回答时带上该省市即可。"
     ),
@@ -1754,6 +1748,10 @@ GET_WEATHER = Tool(
 
 # 普通聊天 agent：群聊回忆 + 当前时间；配置和风天气后追加 get_weather
 _CHAT_TOOLS: list[Tool] = [RECALL_CHAT, GET_CURRENT_TIME]
+if config.AI_WEB_SEARCH_ENABLED:
+    _CHAT_TOOLS.append(WEB_SEARCH)
+if config.AI_WEB_FETCH_ENABLED:
+    _CHAT_TOOLS.append(WEB_FETCH)
 if config.AI_WEATHER_ENABLED:
     _CHAT_TOOLS.append(GET_WEATHER)
 CHAT_TOOLS: tuple[Tool, ...] = tuple(_CHAT_TOOLS)
