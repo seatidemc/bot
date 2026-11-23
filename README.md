@@ -10,7 +10,7 @@ Seatide Minecraft 服务器的 QQ 群机器人，基于 [NoneBot2](https://noneb
 - 斜杠消息统一按指令处理；未知指令会明确回复「指令不存在」
 - AI 工作流：先查关键词词表（命中直接交给 knowledge），未命中再由 router 使用 TypeSafe System One 自动区分普通聊天与知识库问答，分别交给独立 agent 处理
 - chat / knowledge 模型可分别配置端点、模型 id、温度、思考强度和提示词；router 可单独配置 API Key、端点、模型、超时和重试次数
-- agent 支持工具调用：chat agent 可检索群聊记录；knowledge agent 可查实时服务器状态、当前时间，并检索 llms.txt 知识库与抓取页面
+- agent 支持工具调用：chat agent 可检索群聊记录、查询中国大陆城市天气（和风天气）；knowledge agent 可查实时服务器状态、当前时间，并检索 llms.txt 知识库与抓取页面
 - 群内自动聊天支持每分钟限流，回复走被动消息，不占用主动消息额度
 - 支持群消息全量模式（GROUP_MESSAGE_CREATE），只响应 @、回复或自动聊天
 - HTTP 接口：后端或脚本调用后在群内发消息
@@ -163,6 +163,12 @@ QQ_BOTS='[
 | `AI_WEB_FETCH_ENABLED` | `true` | 是否给 knowledge agent 提供 `web_fetch`（抓取任意公开网页正文）；只允许 http/https 公网地址，回环 / 内网 / 保留地址拒绝，重定向逐跳校验 |
 | `AI_WEB_FETCH_TIMEOUT` | `20` | `web_fetch` 单次请求超时秒数 |
 | `AI_WEB_FETCH_MAX_CHARS` | `20000` | `web_fetch` 单次返回给模型的最大字符数，超出截断并附提示 |
+| `AI_WEATHER_API_KEY` | 空 | 和风天气 API Key；配置后给 chat agent 启用 `get_weather` |
+| `AI_WEATHER_API_HOST` | 空 | 和风天气控制台分配的 API Host；可省略 `https://`，不能带路径；启用时必填 |
+| `AI_WEATHER_ENABLED` | 配置 Key 时为 `true` | 天气工具开关；显式 `false` 可关闭 |
+| `AI_WEATHER_TIMEOUT` | `15` | 单次和风天气请求超时秒数 |
+| `AI_WEATHER_MONTHLY_LIMIT` | `50000` | 每个自然月最多发往和风的请求数（含城市解析）；默认等于官方免费额度，`0` 表示不限制并进入按量计费 |
+| `AI_WEATHER_CACHE_TTL` | `300` | 成功天气结果的内存缓存秒数，`0` 表示不缓存 |
 | `AI_CHAT_LOG_RECENT` | `20` | 作为第一条 user 消息预置的最近聊天记录条数，最大 200 |
 | `AI_CHAT_LOG_WINDOW_MINUTES` | `30` | 群聊上下文只取最近多少分钟内的记录，0 表示不限时间 |
 | `AI_ROUTER_HISTORY_TURNS` | `3` | router 参考最近多少条用户消息（跳过 bot 回复和斜杠指令），用于理解追问和指代 |
@@ -194,7 +200,7 @@ QQ_BOTS='[
 2. 非指令消息 → 进入 AI。AI 关闭（`AI_ENABLED=false`）时回复「暂未启动AI」。
 3. AI 开启 → 先查关键词词表（`AI_ROUTER_KEYWORDS_FILE`）：命中即直接交给 knowledge agent，不调用 System One；未命中再由 router（TypeSafe System One 分类器）判断是普通聊天还是知识库问答。
 4. 普通聊天（包括乱码、无意义内容等无法归入知识库的消息）交给 chat agent，知识库问答交给 knowledge agent；各自有独立的系统提示词、模型配置和工具集。
-5. chat agent 可检索群聊记录；knowledge agent 可检索知识库、抓取页面，并查询实时服务器状态和当前时间。由模型自行决定何时结束工具调用并给出最终回复。模型偶发返回空正文时会自动重试最多 2 次，并记录 `finish_reason` 便于排查。
+5. chat agent 可检索群聊记录、查询天气；knowledge agent 可检索知识库、抓取页面，并查询实时服务器状态和当前时间。由模型自行决定何时结束工具调用并给出最终回复。模型偶发返回空正文时会自动重试最多 2 次，并记录 `finish_reason` 便于排查。
 
 补充说明：
 
@@ -202,7 +208,7 @@ QQ_BOTS='[
 - 群聊记录永久保存在 `data/chat_log.db`（含指令和未 @ 的闲聊），上下文按群共享、不按人隔离；每次请求把最近 `AI_CHAT_LOG_RECENT` 条记录按「用户名#标识 | 时间 | 发言内容」作为第一条 user 消息（顶部 `# 最近聊天记录`）预置，当前消息另起一条并带自己的发言人；标识取 `user_openid` 后 6 位，用于区分重名和改名。更早的内容由 chat agent 调用 `recall_chat` 按关键词和时间范围（如 `30m` / `12h` / `7d`）检索。
 - 按群互斥：同一个群同一时间只跑一条 AI 链路，不同群可以并行处理。处理中收到的同群 @ 消息会立即回复「上一条消息正在处理中，请稍后再问」，同群未 @ 的自动聊天消息直接跳过。聊天记录、上下文和工具检索按群隔离。
 - 回复格式：chat 和 knowledge 都发 QQ 原生 Markdown（`msg_type=2`），发送失败会自动回退纯文本。群聊 @ 用户只有 markdown 消息支持，所以发送前会把回复里的 `@昵称` / `@昵称#标识` / `@标识` 解析成真实 @（`<qqbot-at-user id="..." />`），chat 和 knowledge 都适用。QQ 原生 Markdown 语法有限（标题、粗体/斜体、链接、列表、引用、分割线等），模型输出代码块时可能按普通文本显示。
-- 启动校验：`AI_ENABLED=true` 时会检查 router 的 API Key、BASE_URL、MODEL、timeout、knowledge 概率门槛、关键词词表（文件存在时必须能读取且每行都是合法正则），以及 chat / knowledge 的 API Key、BASE_URL、MODEL、系统提示词、temperature / timeout 和 `AI_KNOWLEDGE_LLMS_TXT_URL`；启动时还会实际拉取一次 llms.txt，确认可访问且能解析出条目。任何一项失败都会直接阻止启动，不会留到运行时降级。
+- 启动校验：`AI_ENABLED=true` 时会检查 router 的 API Key、BASE_URL、MODEL、timeout、knowledge 概率门槛、关键词词表（文件存在时必须能读取且每行都是合法正则），以及 chat / knowledge 的 API Key、BASE_URL、MODEL、系统提示词、temperature / timeout 和 `AI_KNOWLEDGE_LLMS_TXT_URL`；启用天气时再检查 `AI_WEATHER_API_KEY`、API Host、超时、缓存和月度限额；启动时还会实际拉取一次 llms.txt，确认可访问且能解析出条目。任何一项失败都会直接阻止启动，不会留到运行时降级。
 - 关键词快捷路由：词表文件每行一个正则，用 `re.search` 匹配，`^A` 表示前缀、`A$` 表示后缀、`.*A.*`（或直接写 `A`）表示任意位置包含；空行和 `#` 注释忽略。命中任意一行会固定判为 knowledge，不产生 System One 请求，也不受 knowledge 概率门槛影响。文件不存在时只记录 WARNING 并停用快捷路由；某行正则非法会让启动失败。
 - router 通过 `typesafe-sdk` 调用 System One，不使用 openai-completions。若判为 knowledge 但 knowledge 概率低于 `AI_ROUTER_MIN_KNOWLEDGE_PROBABILITY`（默认 0.6），按 chat 处理，避免把闲聊送进知识库 agent。调用失败（超时 / 401 / 429 等）或返回的 intent 不在 `chat` / `knowledge` 中时不切换到其他 agent；具体错误只写日志，群内只回复统一提示（429 为「请求太频繁」，其余为「AI 暂时不可用」），不暴露内部报错。
 - chat / knowledge 固定使用 OpenAI Chat Completions 格式（openai-completions），通过官方 `openai` SDK 调用；对应的 `AI_*_BASE_URL` 填 API 根地址（如 `https://api.deepseek.com` 或 `https://example.com/v1`），SDK 会自动拼接 `/chat/completions`。
@@ -263,6 +269,32 @@ AI_KNOWLEDGE_LLMS_TXT_URL=https://docs.example.com/llms.txt
 4. 索引和页面默认缓存 `AI_KNOWLEDGE_CACHE_TTL` 秒。
 5. `fetch_seatide_wiki_doc` 只允许抓取 llms.txt 中列出的 URL，不能抓取任意地址；Wiki 之外的信息用 `web_search` 搜索，需要正文时用 `web_fetch` 抓取公开链接（拒绝内网 / 本机地址）。
 6. `AI_ENABLED=true` 时启动阶段会检查 `AI_KNOWLEDGE_LLMS_TXT_URL` 是否存在且为 http(s) URL，并实际拉取一次 llms.txt；拉取失败或解析不到条目会直接启动失败。
+
+### 天气查询（和风天气）
+
+在 `.env.dev` 或 `.env.prod` 中配置和风天气新版 API：
+
+```env
+AI_WEATHER_API_KEY=你的Key
+# 控制台-设置里的 API Host，可只填主机名
+AI_WEATHER_API_HOST=abcxyz.qweatherapi.com
+# 默认 50000 = 官方免费额度；0 表示不限制
+AI_WEATHER_MONTHLY_LIMIT=50000
+```
+
+chat agent 会获得 `get_weather` 工具，支持：
+
+- `current`：实时天气，附带当前生效预警
+- `minutely`：未来 2 小时分钟级降水（仅中国大陆）
+- `hourly`：逐小时预报，最多 240 小时
+- `daily`：逐日预报，最多 10 天
+- `alerts`：当前生效天气预警
+- `indices`：生活指数（穿衣、紫外线、洗车等）
+- `air` / `air_daily`：实时空气质量和未来 3 天空气质量预报
+
+城市可以直接说中文名（如「北京」「浦东」），也支持「经度,纬度」和和风 LocationID。城市重名时自动选最佳匹配，并在结果开头注明匹配到的省市；必要时可传 `adm` 指定省份。分钟级和生活指数仍使用 `/v7` 路径，其余为 `/v1`；旧版 `api.qweather.com` / `devapi.qweather.com` 已弃用，启动校验会拒绝。
+
+成功结果默认缓存 `AI_WEATHER_CACHE_TTL` 秒；每次实际发往和风的请求（含 GeoAPI）都计入 `data/weather_usage.json` 的月度计数，达到 `AI_WEATHER_MONTHLY_LIMIT` 后工具会提示额度用完，不再发请求。启动阶段只做配置校验，不调用和风接口。
 
 ### 自动聊天（不 @）
 
@@ -400,6 +432,7 @@ pip install -e . -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 ## 更新记录
 
+- 2026-11-23：chat agent 新增和风天气查询工具 `get_weather`：支持城市名/坐标/LocationID 解析，实时、分钟级降水、逐小时、逐日、预警、生活指数和空气质量；新增 `AI_WEATHER_*` 配置，默认按官方免费额度每月 50000 次硬限额，计数持久化到 `data/weather_usage.json`
 - 2026-11-22：移除 invalid agent 和 invalid intent；router 只分流 chat / knowledge，乱码等无意义消息交给 chat agent 处理
 - 2026-11-22：router 改用 TypeSafe System One（`typesafe-sdk`）：用一个 `Choice` 问题把消息分为 chat / knowledge / invalid，并记录置信度；新增 `AI_ROUTER_BASE_URL` / `AI_ROUTER_MODEL` / `AI_ROUTER_TIMEOUT` / `AI_ROUTER_MAX_RETRIES`，移除 router 的 temperature / thinking effort / max tokens / 提示词配置，请求只发送 state 和 Choice 问题；`AI_ROUTER_API_KEY` 为必填项
 - 2026-11-22：AI 模块改为工作流：`/` 开头统一视为指令（未知指令回复不存在），非指令消息经 router 分流到 chat / knowledge 两个 agent；新增工具调用循环、llms.txt 知识库索引与页面抓取；三个模型可分别配置，全局 fallback 统一为 `AI_DEFAULT_*`

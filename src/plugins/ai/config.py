@@ -400,6 +400,33 @@ def _search_endpoint(base_url: str) -> str:
 
 AI_WEB_SEARCH_ENDPOINT: str = _search_endpoint(AI_WEB_SEARCH_BASE_URL)
 
+# ─── 天气查询：和风天气 ──────────────────────────────────────
+# 新 API：每个账号一个 API Host，API Key 走 X-QW-Api-Key。
+# 未配置 Key 时默认关闭；配置 Key 后默认启用。
+# 旧版 api.qweather.com / devapi.qweather.com / geoapi.qweather.com 已弃用。
+
+
+def _weather_host(value: str) -> str:
+    raw = value.strip()
+    if not raw:
+        return ""
+    if "://" not in raw:
+        raw = f"https://{raw}"
+    return raw.rstrip("/")
+
+
+AI_WEATHER_API_KEY: str = _text("ai_weather_api_key")
+AI_WEATHER_API_HOST: str = _weather_host(_text("ai_weather_api_host"))
+AI_WEATHER_ENABLED: bool = _as_bool(
+    _raw("ai_weather_enabled"), bool(AI_WEATHER_API_KEY)
+)
+AI_WEATHER_TIMEOUT: float = max(1.0, _float("ai_weather_timeout", 15.0))
+# 每个自然月最多发往和风的请求数；默认 50000 = 官方免费额度
+# 0 表示不限制（超过免费额度后按量计费）
+AI_WEATHER_MONTHLY_LIMIT: int = _int("ai_weather_monthly_limit", 50000)
+# 成功查询结果的内存缓存秒数，0 表示不缓存
+AI_WEATHER_CACHE_TTL: int = max(0, _int("ai_weather_cache_ttl", 300))
+
 # 群内不 @ 也参与聊天，回复走被动消息
 AI_GROUP_CHAT_WITHOUT_AT: bool = _as_bool(
     _raw("ai_group_chat_without_at"), False
@@ -417,6 +444,26 @@ def _valid_http_url(url: str) -> bool:
     except ValueError:
         return False
     return parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+
+
+_DEPRECATED_WEATHER_HOSTS = {
+    "api.qweather.com",
+    "devapi.qweather.com",
+    "geoapi.qweather.com",
+}
+
+
+def _valid_weather_host(host: str) -> bool:
+    """天气 API Host 必须是 https 裸主机地址，不能带路径或查询参数。"""
+    if not _valid_http_url(host):
+        return False
+    parsed = urlparse(host)
+    return (
+        parsed.scheme == "https"
+        and parsed.path in {"", "/"}
+        and not parsed.query
+        and not parsed.fragment
+    )
 
 
 def validate_agent_configs() -> list[str]:
@@ -557,6 +604,46 @@ def validate_agent_configs() -> list[str]:
             problems.append(
                 "web_fetch: AI_WEB_FETCH_MAX_CHARS 不能小于 500，"
                 f"当前为 {AI_WEB_FETCH_MAX_CHARS}"
+            )
+
+    # 天气查询：配置 Key 后默认启用；启用时必须同时有 Key 和 API Host
+    if AI_WEATHER_ENABLED:
+        if not AI_WEATHER_API_KEY:
+            problems.append(
+                "weather: 已启用天气查询但未配置 API Key"
+                "（AI_WEATHER_API_KEY）"
+            )
+        if not AI_WEATHER_API_HOST:
+            problems.append(
+                "weather: 已启用天气查询但未配置 API Host"
+                "（AI_WEATHER_API_HOST）"
+            )
+        elif not _valid_weather_host(AI_WEATHER_API_HOST):
+            problems.append(
+                "weather: AI_WEATHER_API_HOST 必须是 https API Host，"
+                "不能带路径、查询参数或片段"
+            )
+        else:
+            hostname = (urlparse(AI_WEATHER_API_HOST).hostname or "").lower()
+            if hostname in _DEPRECATED_WEATHER_HOSTS:
+                problems.append(
+                    "weather: 旧版和风天气域名已弃用，请使用控制台"
+                    "分配的 API Host（AI_WEATHER_API_HOST）"
+                )
+        if AI_WEATHER_TIMEOUT <= 0:
+            problems.append(
+                "weather: AI_WEATHER_TIMEOUT 必须大于 0，"
+                f"当前为 {AI_WEATHER_TIMEOUT}"
+            )
+        if AI_WEATHER_MONTHLY_LIMIT < 0:
+            problems.append(
+                "weather: AI_WEATHER_MONTHLY_LIMIT 不能小于 0，"
+                f"当前为 {AI_WEATHER_MONTHLY_LIMIT}"
+            )
+        if AI_WEATHER_CACHE_TTL < 0:
+            problems.append(
+                "weather: AI_WEATHER_CACHE_TTL 不能小于 0，"
+                f"当前为 {AI_WEATHER_CACHE_TTL}"
             )
 
     return problems

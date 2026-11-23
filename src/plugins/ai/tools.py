@@ -1,6 +1,7 @@
 """agent 可调用的工具集：聊天工具与知识库工具相互独立。
 
-知识库采用 llms.txt + fetch 的形式：
+聊天侧工具包括群聊记录检索、当前时间和和风天气查询；知识库采用
+llms.txt + fetch 的形式：
 - ``search_knowledge`` 先读 llms.txt 索引，再按 TTL 抓取索引内页面的正文，
   在标题、章节、说明和正文上做全文检索，返回匹配条目、URL 和正文摘要；
   不传 query 时只列出索引条目；
@@ -30,7 +31,7 @@ import httpx
 from nonebot.log import logger
 
 from ..lab_client import report
-from . import chat_log, config
+from . import chat_log, config, weather
 
 
 @dataclass(frozen=True)
@@ -87,6 +88,34 @@ async def _get_current_time() -> str:
         f"{now.strftime('%Y-%m-%d %H:%M:%S %z')} "
         f"星期{weekdays[now.weekday()]}"
     )
+
+
+async def _get_weather(
+    city: str = "",
+    kind: str = "current",
+    adm: str | None = None,
+    hours: Any = None,
+    days: Any = None,
+    index_types: Any = None,
+) -> str:
+    """和风天气查询；具体实现、缓存与限额在 weather.py。"""
+    if not config.AI_WEATHER_ENABLED:
+        return "天气查询未启用。"
+    if not str(city or "").strip():
+        return "请提供城市名，例如“北京”“杭州”“浦东”。"
+    try:
+        return await weather.query(
+            city=city,
+            kind=kind,
+            adm=adm,
+            hours=hours,
+            days=days,
+            index_types=index_types,
+        )
+    except weather.WeatherError as e:
+        if e.no_data:
+            return str(e)
+        return f"天气查询失败：{e}"
 
 
 # ─── 联网搜索：DeepSeek Search API ───────────────────────────
@@ -1631,8 +1660,103 @@ WEB_FETCH = Tool(
     handler=_web_fetch,
 )
 
-# 普通聊天 agent 只负责回忆群聊记录；实时状态、当前时间交给 knowledge
-CHAT_TOOLS: tuple[Tool, ...] = (RECALL_CHAT, GET_CURRENT_TIME)
+GET_WEATHER = Tool(
+    name="get_weather",
+    description=(
+        "查询中国大陆城市的和风天气数据。支持：实时天气（current，"
+        "附带当前生效预警）、分钟级降水（minutely，未来2小时，仅覆盖"
+        "中国大陆）、逐小时预报（hourly，最多240小时）、每日预报"
+        "（daily，最多10天）、天气预警（alerts）、生活指数（indices）、"
+        "实时空气质量（air）和空气质量预报（air_daily，未来3天）。"
+        "用户问气温、天气、下不下雨、要不要带伞、穿衣、紫外线、"
+        "空气质量、预警等时调用。"
+        "city 传城市/区县中文名，也支持“经度,纬度”（lon,lat）或"
+        "和风天气 LocationID；跨省重名时可同时传 adm（省或地级市）。"
+        "重名时自动选最匹配结果，并在结果开头注明匹配到的省市；"
+        "不要因为重名反问用户，回答时带上该省市即可。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "city": {
+                "type": "string",
+                "description": (
+                    "城市、区县或地名，例如“北京”“杭州”“浦东”；"
+                    "也可传“经度,纬度”（如“116.40,39.90”）"
+                    "或和风天气 LocationID"
+                ),
+            },
+            "adm": {
+                "type": "string",
+                "description": (
+                    "可选，上级行政区（省、自治区、直辖市或地级市），"
+                    "用于消除重名；例如“朝阳”可传“北京市”"
+                ),
+            },
+            "kind": {
+                "type": "string",
+                "enum": [
+                    "current",
+                    "minutely",
+                    "hourly",
+                    "daily",
+                    "alerts",
+                    "indices",
+                    "air",
+                    "air_daily",
+                ],
+                "description": (
+                    "查询类型：current=实时天气（默认，附带当前预警）；"
+                    "minutely=未来2小时分钟级降水（仅中国大陆）；"
+                    "hourly=逐小时预报；daily=每日预报；alerts=天气预警；"
+                    "indices=生活指数；air=实时空气质量；"
+                    "air_daily=未来3天空气质量"
+                ),
+            },
+            "hours": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 240,
+                "description": (
+                    "kind=hourly 时查询的小时数，默认24，最多240；"
+                    "超过24小时会自动抽样显示"
+                ),
+            },
+            "days": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10,
+                "description": (
+                    "kind=daily 时的天数，默认3，最多10；"
+                    "indices 只支持1或3天；air_daily 只支持1-3天"
+                ),
+            },
+            "index_types": {
+                "type": "array",
+                "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 16,
+                },
+                "description": (
+                    "kind=indices 时的指数类型ID，可多选：0=全部，"
+                    "1=运动，2=洗车，3=穿衣，4=钓鱼，5=紫外线，"
+                    "6=旅游，7=花粉过敏，8=舒适度，9=感冒，"
+                    "10=空气污染扩散，11=空调，12=太阳镜，13=化妆，"
+                    "14=晾晒，15=交通，16=防晒；不传默认[3,5,9]"
+                ),
+            },
+        },
+        "required": ["city"],
+    },
+    handler=_get_weather,
+)
+
+# 普通聊天 agent：群聊回忆 + 当前时间；配置和风天气后追加 get_weather
+_CHAT_TOOLS: list[Tool] = [RECALL_CHAT, GET_CURRENT_TIME]
+if config.AI_WEATHER_ENABLED:
+    _CHAT_TOOLS.append(GET_WEATHER)
+CHAT_TOOLS: tuple[Tool, ...] = tuple(_CHAT_TOOLS)
 
 # 知识库问答 agent：检索 llms.txt → fetch 正文，也负责实时状态和当前时间，
 # 并能像 /启动 指令一样触发一键启动；配置了联网搜索 Key 时再加一个

@@ -319,6 +319,13 @@ async def _on_startup():
             f"超时 {config.AI_WEB_FETCH_TIMEOUT:g}s，"
             f"最多 {config.AI_WEB_FETCH_MAX_CHARS} 字符）"
         )
+    if config.AI_WEATHER_ENABLED:
+        logger.info(
+            "天气查询：已启用（get_weather，和风天气，"
+            f"超时 {config.AI_WEATHER_TIMEOUT:g}s，"
+            f"缓存 {config.AI_WEATHER_CACHE_TTL}s，"
+            f"月度限额 {config.AI_WEATHER_MONTHLY_LIMIT or '不限'}）"
+        )
 
     try:
         index = await tools.check_knowledge_index()
