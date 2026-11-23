@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import math
 import re
 import time
@@ -25,7 +24,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from nonebot.log import logger
 
-from ..lab_client import api as backend_api
+from ..lab_client import report
 from . import chat_log, config
 
 
@@ -67,14 +66,13 @@ def reset_group_context(token: Token) -> None:
 
 
 async def _get_server_status() -> str:
-    """查询后端服务器状态并返回原始 JSON。"""
-    try:
-        data = await backend_api.get_server_status()
-    except backend_api.APIError as e:
-        return f"查询服务器状态失败：{e.message}"
-    except Exception as e:  # pragma: no cover - 防御性兜底
-        return f"查询服务器状态失败：{e.__class__.__name__}: {e}"
-    return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    """服务器状态文本；与 /状态 指令共用同一套实现和措辞。"""
+    return await report.server_status_text()
+
+
+async def _start_server() -> str:
+    """触发一键启动；与 /启动 指令共用同一套实现和措辞。"""
+    return await report.start_server_text()
 
 
 async def _get_current_time() -> str:
@@ -144,19 +142,9 @@ def _parse_recent(value: Any) -> tuple[float | None, str]:
     return seconds_value, f"最近 {amount} {_RECENT_UNIT_LABELS[unit]}"
 
 
-def _log_speaker(entry: chat_log.ChatLogEntry) -> str:
-    if entry.role == "bot":
-        return "bot"
-    name = entry.username.strip()
-    if name:
-        return name
-    openid = entry.user_openid.strip()
-    return f"玩家{openid[-4:]}" if openid else "玩家"
-
-
 def _format_log_entry(entry: chat_log.ChatLogEntry) -> str:
     stamp = datetime.fromtimestamp(entry.created_at).strftime("%Y-%m-%d %H:%M")
-    return f"[{stamp}] {_log_speaker(entry)}：{entry.content}"
+    return f"[{stamp}] {chat_log.speaker_name(entry)}：{entry.content}"
 
 
 async def _search_chat_log(
@@ -1195,6 +1183,16 @@ GET_SERVER_STATUS = Tool(
     handler=_get_server_status,
 )
 
+START_SERVER = Tool(
+    name="start_server",
+    description=(
+        "触发 Seatide 服务器的一键启动，"
+        "只在玩家明确要求现在立即启动或开服时调用，其余情况请先确认。"
+    ),
+    parameters={"type": "object", "properties": {}},
+    handler=_start_server,
+)
+
 GET_CURRENT_TIME = Tool(
     name="get_current_time",
     description="获取当前日期、时间和星期。",
@@ -1285,11 +1283,13 @@ FETCH_DOC = Tool(
 # 普通聊天 agent 只负责回忆群聊记录；实时状态、当前时间交给 knowledge
 CHAT_TOOLS: tuple[Tool, ...] = (RECALL_CHAT,)
 
-# 知识库问答 agent：检索 llms.txt → fetch 正文，也负责实时状态和当前时间
+# 知识库问答 agent：检索 llms.txt → fetch 正文，也负责实时状态和当前时间，
+# 并能像 /启动 指令一样触发一键启动
 KNOWLEDGE_TOOLS: tuple[Tool, ...] = (
     SEARCH_KNOWLEDGE,
     FETCH_DOC,
     GET_SERVER_STATUS,
+    START_SERVER,
     GET_CURRENT_TIME,
     RECALL_CHAT
 )

@@ -110,17 +110,20 @@ async def _record_group_message(event):
         logger.exception("群聊记录写入失败")
 
 
-async def _load_history(event: GroupMessageCreateEvent) -> list[dict[str, str]]:
+async def _load_history(
+    event: GroupMessageCreateEvent,
+) -> list[chat_log.ChatLogEntry]:
     """群聊上下文直接取自永久聊天记录，排除正在处理的这条消息。
 
     只取最近 ``AI_CHAT_LOG_RECENT`` 条，且不早于
-    ``AI_CHAT_LOG_WINDOW_MINUTES`` 分钟前。
+    ``AI_CHAT_LOG_WINDOW_MINUTES`` 分钟前。返回的记录带 username 和
+    时间，由 agent 格式化后作为第一条 user 消息。
     """
     limit = config.AI_CHAT_LOG_RECENT
     window = config.AI_CHAT_LOG_WINDOW_MINUTES
     since = time.time() - window * 60 if window > 0 else None
     try:
-        history = await chat_log.recent_messages(
+        history = await chat_log.recent_entries(
             event.group_openid,
             limit,
             exclude_message_id=getattr(event, "id", None) or None,
@@ -132,7 +135,8 @@ async def _load_history(event: GroupMessageCreateEvent) -> list[dict[str, str]]:
 
     span = f"{window} 分钟内" if window > 0 else "不限时间"
     logger.info(
-        f"群聊上下文：预置 {len(history)} 条（上限 {limit} 条，{span}）"
+        f"群聊上下文：预置 {len(history)} 条（上限 {limit} 条，{span}），"
+        "作为第一条 user 消息"
     )
     return history
 
@@ -271,6 +275,11 @@ async def _on_startup():
             else "（不限时间）"
         )
     )
+    if config.ROUTER_KEYWORDS:
+        logger.info(
+            f"关键词快捷路由：{len(config.ROUTER_KEYWORDS)} 条规则，"
+            f"命中后直接交给 knowledge（{config.AI_ROUTER_KEYWORDS_FILE}）"
+        )
     logger.info(f"知识库索引：{config.AI_KNOWLEDGE_LLMS_TXT_URL}")
 
     try:

@@ -14,7 +14,7 @@ from typing import Any
 
 from nonebot.log import logger
 
-from . import api, config
+from . import api, chat_log, config
 from .tools import CHAT_TOOLS, KNOWLEDGE_TOOLS, Tool
 
 
@@ -122,15 +122,34 @@ async def _run_tool_calls(
 _EMPTY_REPLY_RETRIES = 2
 
 
+# 群聊记录作为第一条 user 消息注入，而不是拼进 system prompt：
+# 每条记录都能带上发言人和时间，同时 system prompt 保持稳定，便于
+# provider 侧做 prompt 缓存。
+_HISTORY_HEADER = "# 最近聊天记录"
+
+
+def _build_history_message(
+    history: list[chat_log.ChatLogEntry],
+) -> dict[str, str]:
+    transcript = "\n".join(
+        chat_log.format_transcript_line(entry) for entry in history
+    )
+    return {
+        "role": "user",
+        "content": f"{_HISTORY_HEADER}\n\n{transcript}",
+    }
+
+
 async def run_agent(
-    agent: Agent, text: str, history: list[dict[str, str]]
+    agent: Agent, text: str, history: list[chat_log.ChatLogEntry]
 ) -> str:
     messages: list[dict[str, Any]] = []
     if agent.model.system_prompt:
         messages.append(
             {"role": "system", "content": agent.model.system_prompt}
         )
-    messages.extend(history)
+    if history:
+        messages.append(_build_history_message(history))
     messages.append({"role": "user", "content": text})
 
     empty_replies = 0

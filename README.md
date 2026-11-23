@@ -8,7 +8,7 @@ Seatide Minecraft 服务器的 QQ 群机器人，基于 [NoneBot2](https://noneb
 
 - 群内命令：服务器状态（在线、人数、资源占用、预计释放时间）、一键启动服务器
 - 斜杠消息统一按指令处理；未知指令会明确回复「指令不存在」
-- AI 工作流：router 使用 TypeSafe System One 自动区分普通聊天与知识库问答，分别交给独立 agent 处理
+- AI 工作流：先查关键词词表（命中直接交给 knowledge），未命中再由 router 使用 TypeSafe System One 自动区分普通聊天与知识库问答，分别交给独立 agent 处理
 - chat / knowledge 模型可分别配置端点、模型 id、温度、思考强度和提示词；router 可单独配置 API Key、端点、模型、超时和重试次数
 - agent 支持工具调用：chat agent 可检索群聊记录；knowledge agent 可查实时服务器状态、当前时间，并检索 llms.txt 知识库与抓取页面
 - 群内自动聊天支持每分钟限流，回复走被动消息，不占用主动消息额度
@@ -24,6 +24,7 @@ src/plugins/lab_client/         # QQ 命令（对接后端 /bot-v1）+ 未知指
 src/plugins/ai/                # AI 工作流：System One router、chat/knowledge agent、工具
 src/plugins/http_api/           # 对外 HTTP 接口
 prompts/                        # chat / knowledge 提示词
+data/keywords.txt               # router 关键词词表（命中直接走 knowledge）
 .env.example                    # 配置模板
 .env.dev / .env.prod            # 实际配置（已 gitignore）
 start.sh                        # Linux / macOS 一键启动（dev 前台 / prod screen）
@@ -159,10 +160,11 @@ QQ_BOTS='[
 | `AI_KNOWLEDGE_FETCH_TIMEOUT` | `15` | 抓取 llms.txt / 页面的超时秒数 |
 | `AI_KNOWLEDGE_CACHE_TTL` | `300` | 索引/页面内存缓存秒数，0 表示不缓存 |
 | `AI_KNOWLEDGE_FETCH_URL_REGEX` | 空 | `fetch_doc` 允许抓取的 URL 正则（完整匹配）；空表示只受 llms.txt 索引约束，重定向逐跳校验。文档 301 到其他域名时，目标域名也必须被正则放行 |
-| `AI_CHAT_LOG_RECENT` | `20` | 群聊上下文预置的最近聊天记录条数，最大 200 |
+| `AI_CHAT_LOG_RECENT` | `20` | 作为第一条 user 消息预置的最近聊天记录条数，最大 200 |
 | `AI_CHAT_LOG_WINDOW_MINUTES` | `30` | 群聊上下文只取最近多少分钟内的记录，0 表示不限时间 |
 | `AI_ROUTER_HISTORY_TURNS` | `3` | router 参考最近多少条用户消息（跳过 bot 回复和斜杠指令），用于理解追问和指代 |
 | `AI_ROUTER_MIN_KNOWLEDGE_PROBABILITY` | `0.6` | knowledge 概率低于该值时按 chat 处理，取值 0~1；0 表示不启用 |
+| `AI_ROUTER_KEYWORDS_FILE` | `data/keywords.txt` | 关键词词表：命中任意一行的正则时直接判定 knowledge，跳过 System One；相对路径以项目根目录为准，空行和 `#` 注释忽略；文件不存在时只停用快捷路由 |
 | `AI_GROUP_CHAT_WITHOUT_AT` | `false` | 群内不 @ 也参与聊天；回复走被动消息 |
 | `AI_GROUP_CHAT_PER_MINUTE` | `5` | 每个群每分钟自动聊天回复上限，0 关闭 |
 | `AI_MARKDOWN_REPLY` | `true` | AI 最终回复以 QQ 原生 Markdown（`msg_type=2`）发送；发送失败自动回退纯文本 |
@@ -188,17 +190,18 @@ QQ_BOTS='[
 
 1. 以 `/` 或 `／` 开头 → 指令；已知指令执行对应命令，未知指令回复「指令不存在」。
 2. 非指令消息 → 进入 AI。AI 关闭（`AI_ENABLED=false`）时回复「暂未启动AI」。
-3. AI 开启 → router（TypeSafe System One 分类器）判断是普通聊天还是知识库问答。
+3. AI 开启 → 先查关键词词表（`AI_ROUTER_KEYWORDS_FILE`）：命中即直接交给 knowledge agent，不调用 System One；未命中再由 router（TypeSafe System One 分类器）判断是普通聊天还是知识库问答。
 4. 普通聊天（包括乱码、无意义内容等无法归入知识库的消息）交给 chat agent，知识库问答交给 knowledge agent；各自有独立的系统提示词、模型配置和工具集。
 5. chat agent 可检索群聊记录；knowledge agent 可检索知识库、抓取页面，并查询实时服务器状态和当前时间。由模型自行决定何时结束工具调用并给出最终回复。模型偶发返回空正文时会自动重试最多 2 次，并记录 `finish_reason` 便于排查。
 
 补充说明：
 
 - 只支持群聊：@bot 后发文字；开启自动聊天后，未 @ 的普通文字也会进入 AI。私聊消息直接忽略。
-- 群聊记录永久保存在 `data/chat_log.db`（含指令和未 @ 的闲聊），上下文按群共享、不按人隔离；每次请求预置最近 `AI_CHAT_LOG_RECENT` 条，更早的内容由 chat agent 调用 `recall_chat` 按关键词和时间范围（如 `30m` / `12h` / `7d`）检索。
+- 群聊记录永久保存在 `data/chat_log.db`（含指令和未 @ 的闲聊），上下文按群共享、不按人隔离；每次请求把最近 `AI_CHAT_LOG_RECENT` 条记录按「用户名 | 时间 | 发言内容」作为第一条 user 消息（顶部 `# 最近聊天记录`）预置，更早的内容由 chat agent 调用 `recall_chat` 按关键词和时间范围（如 `30m` / `12h` / `7d`）检索。
 - 按群互斥：同一个群同一时间只跑一条 AI 链路，不同群可以并行处理。处理中收到的同群 @ 消息会立即回复「上一条消息正在处理中，请稍后再问」，同群未 @ 的自动聊天消息直接跳过。聊天记录、上下文和工具检索按群隔离。
 - AI 最终回复默认以 QQ 原生 Markdown（`msg_type=2`）发送，`AI_MARKDOWN_REPLY=false` 可关闭；发送失败会自动回退纯文本。QQ 原生 Markdown 语法有限（标题、粗体/斜体、链接、列表、引用、分割线等），模型输出代码块时可能按普通文本显示。
-- 启动校验：`AI_ENABLED=true` 时会检查 router 的 API Key、BASE_URL、MODEL、timeout、knowledge 概率门槛，以及 chat / knowledge 的 API Key、BASE_URL、MODEL、系统提示词、temperature / timeout 和 `AI_KNOWLEDGE_LLMS_TXT_URL`；启动时还会实际拉取一次 llms.txt，确认可访问且能解析出条目。任何一项失败都会直接阻止启动，不会留到运行时降级。
+- 启动校验：`AI_ENABLED=true` 时会检查 router 的 API Key、BASE_URL、MODEL、timeout、knowledge 概率门槛、关键词词表（文件存在时必须能读取且每行都是合法正则），以及 chat / knowledge 的 API Key、BASE_URL、MODEL、系统提示词、temperature / timeout 和 `AI_KNOWLEDGE_LLMS_TXT_URL`；启动时还会实际拉取一次 llms.txt，确认可访问且能解析出条目。任何一项失败都会直接阻止启动，不会留到运行时降级。
+- 关键词快捷路由：词表文件每行一个正则，用 `re.search` 匹配，`^A` 表示前缀、`A$` 表示后缀、`.*A.*`（或直接写 `A`）表示任意位置包含；空行和 `#` 注释忽略。命中任意一行会固定判为 knowledge，不产生 System One 请求，也不受 knowledge 概率门槛影响。文件不存在时只记录 WARNING 并停用快捷路由；某行正则非法会让启动失败。
 - router 通过 `typesafe-sdk` 调用 System One，不使用 openai-completions。若判为 knowledge 但 knowledge 概率低于 `AI_ROUTER_MIN_KNOWLEDGE_PROBABILITY`（默认 0.6），按 chat 处理，避免把闲聊送进知识库 agent。调用失败（超时 / 401 / 429 等）或返回的 intent 不在 `chat` / `knowledge` 中时不切换到其他 agent；具体错误只写日志，群内只回复统一提示（429 为「请求太频繁」，其余为「AI 暂时不可用」），不暴露内部报错。
 - chat / knowledge 固定使用 OpenAI Chat Completions 格式（openai-completions），通过官方 `openai` SDK 调用；对应的 `AI_*_BASE_URL` 填 API 根地址（如 `https://api.deepseek.com` 或 `https://example.com/v1`），SDK 会自动拼接 `/chat/completions`。
 - 每次路由以 INFO 记录 `AI 路由：chat/knowledge` 和 System One 的置信度；chat / knowledge 的每次模型调用记录 `LLM 用量[component/model]`：prompt / completion / 思考 token / 缓存命中情况，便于观察成本构成；最终发到群里的回复以 INFO 完整记录（`AI 回复[intent][群 openid]：...`），不截断。

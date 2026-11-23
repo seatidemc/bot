@@ -13,6 +13,8 @@ from urllib.parse import urlparse
 from nonebot import get_driver
 from nonebot.log import logger
 
+from . import keywords
+
 _cfg = get_driver().config
 
 # 项目根目录（bot.py 所在目录），相对路径的提示词文件以此为准
@@ -262,6 +264,43 @@ ROUTER: RouterConfig = RouterConfig(
     ),
 )
 
+# 关键词快捷路由：词表文件每行一个正则，命中后直接判定 knowledge，
+# 不再调用 System One。相对路径以项目根目录为准。
+AI_ROUTER_KEYWORDS_FILE: str = _text(
+    "ai_router_keywords_file", "data/keywords.txt"
+)
+
+
+def _load_router_keywords() -> tuple[tuple[keywords.Rule, ...], str | None]:
+    """读取关键词文件；返回（规则, 配置错误）。
+
+    文件不存在时只停用快捷路由（不阻止启动）；文件存在但读取失败或正则
+    非法时返回错误，由启动校验拦下，避免词表写错却静默失效。
+    """
+    path = Path(AI_ROUTER_KEYWORDS_FILE).expanduser()
+    if not path.is_absolute():
+        path = _PROJECT_ROOT / path
+    path = path.resolve()
+
+    if not path.is_file():
+        logger.warning(
+            f"[router] 关键词文件不存在，关键词直达 knowledge 已停用: {path}"
+        )
+        return (), None
+
+    try:
+        rules = keywords.load(path)
+    except keywords.KeywordFileError as e:
+        return (), f"router: {e}"
+
+    if not rules:
+        logger.warning(f"[router] 关键词文件没有有效规则: {path}")
+    return tuple(rules), None
+
+
+ROUTER_KEYWORDS, ROUTER_KEYWORDS_PROBLEM = _load_router_keywords()
+
+
 _KNOWLEDGE_PROMPT_FILE = _text(
     "ai_knowledge_system_prompt_file", "prompts/knowledge_prompt.md"
 )
@@ -386,6 +425,8 @@ def validate_agent_configs() -> list[str]:
             "router: MIN_KNOWLEDGE_PROBABILITY 必须在 0~1 之间，"
             f"当前为 {ROUTER.min_knowledge_probability}"
         )
+    if ROUTER_KEYWORDS_PROBLEM:
+        problems.append(ROUTER_KEYWORDS_PROBLEM)
 
     key_hints = {
         "chat": "AI_CHAT_API_KEY 或 AI_DEFAULT_API_KEY",

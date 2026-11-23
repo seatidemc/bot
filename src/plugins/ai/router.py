@@ -29,7 +29,7 @@ from typesafe_sdk import (
 )
 
 from ..lab_client import is_command_text
-from . import api, config
+from . import api, chat_log, config, keywords
 
 # ─── 分类问题 ────────────────────────────────────────────────
 
@@ -39,12 +39,11 @@ _INTENTS = ("chat", "knowledge")
 _ROUTER_CRITERIA: dict[str, str] = {
     "chat": (
         "日常闲聊、打招呼、情绪表达、与 Seatide 服务器无关的通用问题、"
-        "乱码或没有实际意义的内容"
+        "乱码、网络梗或没有实际意义的内容"
     ),
     "knowledge": (
         "询问 Seatide 服务器的规则、玩法、插件、指令、公告、历史、"
-        "常见问题等，需要查阅知识库才能准确回答的问题，以及需要查询"
-        "实时服务器状态或当前时间的问题"
+        "常见问题等需要查阅知识库、外部信息的问题，或与服务器相关的读写操作"
     ),
 }
 
@@ -134,8 +133,24 @@ def _llm_error(exc: Exception) -> api.LLMError:
 # ─── 路由 ────────────────────────────────────────────────────
 
 
+def _keyword_decision(text: str) -> RouteDecision | None:
+    """命中关键词词表时直接判为 knowledge，跳过 System One。"""
+    rule = keywords.match(text, config.ROUTER_KEYWORDS)
+    if rule is None:
+        return None
+
+    logger.info(
+        f"AI 路由：knowledge（命中关键词 {rule.pattern!r}，"
+        "跳过 System One）"
+    )
+    return RouteDecision(
+        intent="knowledge",
+        reason=f"关键词命中 {rule.pattern!r}",
+    )
+
+
 def _build_state(
-    text: str, history: list[dict[str, str]]
+    text: str, history: list[chat_log.ChatLogEntry]
 ) -> dict[str, Any]:
     """构造 System One 的 state。
 
@@ -154,11 +169,11 @@ def _build_state(
         recent = [
             {
                 "role": "user",
-                "content": str(message.get("content", "")),
+                "content": entry.content,
             }
-            for message in history
-            if message.get("role") == "user"
-            and not is_command_text(str(message.get("content", "")))
+            for entry in history
+            if entry.role == "user"
+            and not is_command_text(entry.content)
         ][-limit:]
     return {
         "recent_conversation": recent,
@@ -185,9 +200,16 @@ def _log_usage(result: SystemOneResponse) -> None:
 
 
 async def route(
-    text: str, history: list[dict[str, str]]
+    text: str, history: list[chat_log.ChatLogEntry]
 ) -> RouteDecision:
-    """调用 System One 判断最新一条消息应该交给哪个 agent。"""
+    """判断最新一条消息应该交给哪个 agent。
+
+    先查关键词词表，命中即直接返回 knowledge；否则调用 System One。
+    """
+    keyword_decision = _keyword_decision(text)
+    if keyword_decision is not None:
+        return keyword_decision
+
     questions = {"intent": Choice(criteria=_ROUTER_CRITERIA)}
 
     try:

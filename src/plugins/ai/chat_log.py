@@ -1,9 +1,11 @@
 """群聊聊天记录的永久存储（SQLite）。
 
-记录按 ``group_openid`` 隔离，不区分用户：同一个群里所有人的发言和 bot
-的回复构成同一份上下文。消息只增不删，用于：
+记录按 ``group_openid`` 隔离，同一个群里所有人的发言和 bot 的回复构成
+同一份上下文。每条用户消息额外保存 ``username`` / ``user_openid`` 和
+时间：作为 agent 的第一条 user 消息预置时，按「用户名 | 时间 | 发言内容」
+区分发言人。消息只增不删，用于：
 
-- 每次请求时预置最近的聊天内容；
+- 每次请求时把最近的聊天内容作为第一条 user 消息注入；
 - chat agent 通过 ``recall_chat`` 工具检索更早的记录。
 
 数据库固定放在 ``data/chat_log.db``，随 ``data/`` 一起被 .gitignore 排除。
@@ -15,6 +17,7 @@ import asyncio
 import sqlite3
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
@@ -138,25 +141,26 @@ async def record_bot(
     await _run(op)
 
 
-async def recent_messages(
+async def recent_entries(
     group_openid: str,
     limit: int,
     *,
     exclude_message_id: str | None = None,
     since: float | None = None,
-) -> list[dict[str, str]]:
-    """读取群里最近的聊天记录，返回可直接放进 messages 的列表。
+) -> list[ChatLogEntry]:
+    """读取群里最近的聊天记录，按时间正序返回。
 
-    结果按时间正序；``exclude_message_id`` 用于排除当前正在处理的这条
-    消息，避免在 agent 里重复出现；``since`` 是 Unix 时间戳，只取不早于
-    该时间的记录（``None`` 表示不限时间）。
+    ``exclude_message_id`` 用于排除当前正在处理的这条消息，避免在 agent
+    里重复出现；``since`` 是 Unix 时间戳，只取不早于该时间的记录
+    （``None`` 表示不限时间）。
     """
     if limit <= 0:
         return []
 
-    def op(conn: sqlite3.Connection) -> list[dict[str, str]]:
+    def op(conn: sqlite3.Connection) -> list[ChatLogEntry]:
         rows = conn.execute(
-            "SELECT role, content FROM chat_log "
+            "SELECT role, user_openid, username, content, created_at "
+            "FROM chat_log "
             "WHERE group_openid = ? "
             "  AND (? IS NULL OR message_id IS NULL OR message_id != ?) "
             "  AND (? IS NULL OR created_at >= ?) "
@@ -171,14 +175,35 @@ async def recent_messages(
             ),
         ).fetchall()
         return [
-            {
-                "role": "assistant" if row["role"] == "bot" else "user",
-                "content": row["content"],
-            }
+            ChatLogEntry(
+                role=row["role"],
+                user_openid=row["user_openid"],
+                username=row["username"],
+                content=row["content"],
+                created_at=row["created_at"],
+            )
             for row in reversed(rows)
         ]
 
     return await _run(op)
+
+
+def speaker_name(entry: ChatLogEntry) -> str:
+    """聊天记录里的发言人显示名：用户名优先，缺失时用 openid 后四位。"""
+    if entry.role == "bot":
+        return "bot"
+    name = entry.username.strip()
+    if name:
+        return name
+    openid = entry.user_openid.strip()
+    return f"玩家{openid[-4:]}" if openid else "玩家"
+
+
+def format_transcript_line(entry: ChatLogEntry) -> str:
+    """把一条聊天记录格式化为 system prompt 里的单行：用户 | 时间 | 内容。"""
+    stamp = datetime.fromtimestamp(entry.created_at).strftime("%Y-%m-%d %H:%M")
+    content = " ".join(entry.content.split())
+    return f"{speaker_name(entry)} | {stamp} | {content}"
 
 
 def _escape_like(term: str) -> str:

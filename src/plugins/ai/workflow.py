@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from . import agents, router
+from . import agents, chat_log, router
 
 
 @dataclass(frozen=True)
@@ -14,7 +14,9 @@ class WorkflowResult:
     reason: str
 
 
-async def run(text: str, history: list[dict[str, str]]) -> WorkflowResult:
+async def run(
+    text: str, history: list[chat_log.ChatLogEntry]
+) -> WorkflowResult:
     """路由并执行一次完整的 AI 对话。
 
     chat / knowledge 各自有独立的系统提示词、模型配置和工具集。
