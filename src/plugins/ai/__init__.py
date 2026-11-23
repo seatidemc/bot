@@ -15,7 +15,7 @@ import time
 from collections import deque
 
 from nonebot import get_driver, on_message
-from nonebot.adapters.qq import Bot, GroupMessageCreateEvent
+from nonebot.adapters.qq import Bot, GroupMessageCreateEvent, MessageSegment
 from nonebot.log import logger
 from nonebot.permission import Permission
 from nonebot.rule import Rule
@@ -216,7 +216,23 @@ async def handle_chat(bot: Bot, event: GroupMessageCreateEvent):
         await chat_log.record_bot(event.group_openid, reply)
     except Exception:
         logger.exception("群聊记录写入失败")
-    await chat.finish(reply)
+    await _send_reply(reply)
+
+
+async def _send_reply(reply: str) -> None:
+    """发送最终回复：优先 QQ 原生 Markdown，发送失败时回退纯文本。"""
+    if not config.AI_MARKDOWN_REPLY:
+        await chat.finish(reply)
+        return
+
+    try:
+        await chat.send(MessageSegment.markdown(reply))
+    except Exception:
+        logger.warning("Markdown 回复发送失败，回退为纯文本", exc_info=True)
+        await chat.finish(reply)
+        return
+
+    await chat.finish()
 
 
 # ─── 启动日志 ────────────────────────────────────────────────

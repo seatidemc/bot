@@ -73,6 +73,7 @@ QQ 用户 ──► QQ 开放平台 ──WS──► NoneBot2（bot.py，WS 客
 | `AI_ROUTER_MIN_KNOWLEDGE_PROBABILITY` | knowledge 概率低于该值时按 chat 处理，默认 0.6，取值 0~1；0 表示不启用 |
 | `AI_GROUP_CHAT_WITHOUT_AT` | 群内不 @ 是否参与聊天，默认 false |
 | `AI_GROUP_CHAT_PER_MINUTE` | 每个群每分钟自动聊天回复上限，默认 5 |
+| `AI_MARKDOWN_REPLY` | AI 最终回复是否以 QQ 原生 Markdown（`msg_type=2`）发送，默认 true；发送失败自动回退纯文本 |
 | `HOST` / `PORT` | HTTP 服务监听地址，默认 `127.0.0.1:8081`，建议只监听本机 |
 | `HTTP_API_MAX_CHARS` | 单条消息最大字符数，默认 2000 |
 
@@ -172,6 +173,7 @@ SEATIDE_ENV=prod python bot.py   # 生产
 - **上下文**：只按群隔离，不按人隔离。所有群消息（含指令、未 @ 闲聊）落地到 `data/chat_log.db`；每次请求从该表预置最近 `AI_CHAT_LOG_RECENT` 条、且不早于 `AI_CHAT_LOG_WINDOW_MINUTES` 分钟前的记录作为共享上下文，并以 INFO 记录实际预置条数。router 只从中取最近 `AI_ROUTER_HISTORY_TURNS` 条用户消息（跳过 bot 回复和斜杠指令）用于分类，两个 agent 使用完整上下文；chat agent 可用 `recall_chat` 按关键词和时间范围（`Nd` / `Nh` / `Nm`，默认 `1h`）检索更早的记录；格式无法解析、或起点早于本群最早聊天记录时，工具会返回错误而不是静默调整范围，`0` 表示不限时间。
 - **并发与限流**：按群互斥，同一个群同一时间只跑一条 AI 链路，不同群可以并行处理；处理中收到的同群 @ 消息立即回复「上一条消息正在处理中，请稍后再问」，同群未 @ 的自动聊天消息直接跳过。开启 `AI_GROUP_CHAT_WITHOUT_AT` 后，未 @ 的群消息另按群每分钟限流，回复走被动消息。聊天记录、上下文和工具检索都按 `group_openid` 隔离，两个群互不串数据。
 - **私聊**：暂不支持。私聊事件会被直接忽略，指令和 AI 都只处理群聊。
+- **回复格式**：AI 最终回复通过 `MessageSegment.markdown` 以 QQ 原生 Markdown（`msg_type=2`）发送，`AI_MARKDOWN_REPLY=false` 时发纯文本；Markdown 发送失败会以 WARNING 记录原因并自动回退纯文本。QQ 原生 Markdown 只支持标题、粗体/斜体/删除线、链接、图片、列表、引用、分割线等有限语法，模型输出代码块时可能按普通文本显示。指令回复和 HTTP 接口仍是纯文本。
 - **日志**：每次路由以 INFO 记录 `AI 路由：chat/knowledge`、System One 的 `confidence` 和两类概率（按概率降序），若返回的 choice 不是概率最高项则追加 WARNING；chat / knowledge 的每次模型调用记录 `LLM 用量[component/model]`（prompt / completion / 思考 token / 缓存命中），router 另行记录 prompt / completion token 用量；每次工具调用以 INFO 记录工具名和传入参数，不记录工具返回；最终回复以 INFO 记录 `AI 回复[intent][群 openid]：<完整内容>`，不截断。
 - **知识库**：标准 llms.txt 索引（`# 标题`、`> 简介`、`## 章节`、`- [标题](URL): 说明`）；没有链接时把 llms.txt 自身当作可 fetch 的文档。索引与页面按 `AI_KNOWLEDGE_CACHE_TTL` 秒缓存，支持 Markdown、纯文本和 HTML，HTML 会去掉脚本/导航/页脚。
 - **抓取安全**：`fetch_doc` 只允许抓取 llms.txt 索引中出现过的 URL，以及 http(s) 协议；配置 `AI_KNOWLEDGE_FETCH_URL_REGEX` 后，URL 还必须完整匹配该正则（作为额外白名单），留空则不额外限制。重定向逐跳校验协议和正则；若文档会 301 到其他域名，正则必须同时放行目标域名（例如 Seatide 文档从 `seatidemc.github.io` 301 到 `http://seatide.net`）。不再限制回环/内网地址。
