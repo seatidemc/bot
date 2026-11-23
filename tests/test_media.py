@@ -43,7 +43,6 @@ class DescribeTest(unittest.TestCase):
                 MessageSegment.emoji("14"),
                 _attachment("image", "https://example.com/a.png"),
                 _attachment("video", "https://example.com/b.mp4"),
-                MessageSegment.mention_user("123"),
             ]
         )
         parsed = media.describe(message)
@@ -51,6 +50,29 @@ class DescribeTest(unittest.TestCase):
         self.assertEqual(
             [ref.kind for ref in parsed.attachments], ["image", "video"]
         )
+
+    def test_mention_user_uses_name_and_stable_id(self):
+        message = Message(
+            [
+                MessageSegment.mention_user("ABCDEF123456", "小明"),
+                MessageSegment.text(" 今晚打本吗"),
+            ]
+        )
+        self.assertEqual(media.describe(message).text, "@小明#123456 今晚打本吗")
+
+    def test_mention_user_without_username_falls_back(self):
+        message = Message([MessageSegment.mention_user("ABCDEF123456")])
+        self.assertEqual(media.describe(message).text, "@玩家#123456")
+
+    def test_mention_everyone(self):
+        message = Message([MessageSegment.mention_everyone()])
+        self.assertEqual(media.describe(message).text, "@全体成员")
+
+    def test_mention_bot_is_dropped(self):
+        segment = MessageSegment.mention_user("BOTOPENID", "SeatideBot")
+        segment.data["is_bot"] = True
+        message = Message([segment, MessageSegment.text(" 你好")])
+        self.assertEqual(media.describe(message).text, "你好")
 
     def test_multiple_images_are_numbered(self):
         message = Message(

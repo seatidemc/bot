@@ -54,6 +54,9 @@ _MIN_VIDEO_SECONDS = 2.0
 _DOWNLOADABLE_KINDS = {"image", "video"}
 _KIND_LABELS = {"image": "图片", "video": "视频"}
 
+# 与 chat_log.stable_id 保持一致（media 被 chat_log 依赖，不能反向导入）
+_STABLE_ID_LEN = 6
+
 # QQ 内置小黄脸 id → 名称（经典 0~103；未知 id 显示成 [QQ表情:id]）
 QQ_EMOJI_NAMES: dict[str, str] = {
     "0": "惊讶", "1": "撇嘴", "2": "色", "3": "发呆", "4": "得意",
@@ -192,6 +195,13 @@ def _emoji_label(raw_id: str) -> str:
     return f"[QQ表情:{emoji_id}]" if emoji_id else "[表情]"
 
 
+def _mention_label(user_id: str, username: Any) -> str:
+    """群消息里 @ 其他成员时显示成 ``@昵称#标识``，与聊天记录的发言人格式一致。"""
+    name = str(username or "").strip() or "玩家"
+    suffix = user_id.strip()[-_STABLE_ID_LEN:]
+    return f"@{name}#{suffix}" if suffix else f"@{name}"
+
+
 def describe(message: Any) -> ParsedMessage:
     """把 QQ ``Message`` 转成可入库的文本 + 待下载附件。
 
@@ -199,8 +209,9 @@ def describe(message: Any) -> ParsedMessage:
     - emoji 段转成 ``[表情:名称]``；
     - image / video 段插入 ``[图片]`` / ``[视频]`` 标记并收集 URL；
     - audio / file 段只留 ``[语音]`` / ``[文件]`` 标记；
-    - mention_* / ark / embed / markdown / reference 等没有可读正文，忽略
-      （与原来的 ``get_plaintext()`` 行为一致）。
+    - mention_user 段转成 ``@昵称#标识``，其中 @bot 直接丢掉；
+    - mention_everyone 段转成 ``@全体成员``；
+    - ark / embed / markdown / reference 等没有可读正文，忽略。
     """
     segments = list(message)
     counts: dict[str, int] = defaultdict(int)
@@ -220,6 +231,16 @@ def describe(message: Any) -> ParsedMessage:
             parts.append(str(data.get("text") or ""))
         elif kind == "emoji":
             parts.append(_emoji_label(str(data.get("id") or "")))
+        elif kind == "mention_user":
+            # adapter 会给段补上 username / is_bot；@bot 本身没有信息量，丢掉
+            if not data.get("is_bot"):
+                parts.append(
+                    _mention_label(
+                        str(data.get("user_id") or ""), data.get("username")
+                    )
+                )
+        elif kind == "mention_everyone":
+            parts.append("@全体成员")
         elif kind in ("image", "video", "audio", "file"):
             seen[kind] += 1
             label = {
@@ -234,7 +255,7 @@ def describe(message: Any) -> ParsedMessage:
             url = str(data.get("url") or "").strip()
             if kind in _DOWNLOADABLE_KINDS and url:
                 refs.append(AttachmentRef(kind=kind, url=url))
-        # mention_*、ark、embed、markdown、reference、keyboard 等忽略
+        # ark、embed、markdown、reference、keyboard 等忽略
 
     return ParsedMessage(
         text="".join(parts).strip(),
